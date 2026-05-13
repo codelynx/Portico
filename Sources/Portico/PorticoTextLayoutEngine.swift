@@ -109,6 +109,69 @@ public class PorticoTextLayoutEngine {
 		updateLayout()
 	}
 	
+	public enum MoveDirection {
+		case left, right, up, down
+	}
+	
+	private func targetIndex(for direction: MoveDirection) -> Int {
+		switch direction {
+		case .left:
+			if orientation == .horizontal {
+				return max(0, cursorIndex - 1)
+			} else {
+				let rect = caretRect(for: cursorIndex)
+				let point = CGPoint(x: rect.midX - rect.width, y: rect.midY)
+				return stringIndex(for: point)
+			}
+		case .right:
+			if orientation == .horizontal {
+				return min(attributedString.length, cursorIndex + 1)
+			} else {
+				let rect = caretRect(for: cursorIndex)
+				let point = CGPoint(x: rect.midX + rect.width, y: rect.midY)
+				return stringIndex(for: point)
+			}
+		case .up:
+			if orientation == .horizontal {
+				let rect = caretRect(for: cursorIndex)
+				let point = CGPoint(x: rect.midX, y: rect.midY + rect.height)
+				return stringIndex(for: point)
+			} else {
+				return max(0, cursorIndex - 1)
+			}
+		case .down:
+			if orientation == .horizontal {
+				let rect = caretRect(for: cursorIndex)
+				let point = CGPoint(x: rect.midX, y: rect.midY - rect.height)
+				return stringIndex(for: point)
+			} else {
+				return min(attributedString.length, cursorIndex + 1)
+			}
+		}
+	}
+	
+	public func moveCursor(direction: MoveDirection, modifySelection: Bool = false) {
+		let target = targetIndex(for: direction)
+		
+		if modifySelection {
+			if selectionRange == nil {
+				beginSelection(at: cursorIndex)
+			}
+			updateSelection(to: target)
+		} else {
+			cursorIndex = target
+			selectionRange = nil
+			selectionAnchorIndex = nil
+		}
+		
+		setNeedsDisplay()
+	}
+	
+	private func setNeedsDisplay() {
+		// Just trigger a re-draw notification (handled by whoever owns textDidChange if needed, or view directly)
+		// Wait, view triggers setNeedsDisplay itself, so we don't strictly need to call textDidChange unless text changed.
+	}
+	
 	public func insertText(_ text: String) {
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
 		let attrs = cursorIndex > 0 ? mutableString.attributes(at: cursorIndex - 1, effectiveRange: nil) : [:]

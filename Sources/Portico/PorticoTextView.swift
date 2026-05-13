@@ -59,6 +59,30 @@ public class PorticoTextView: NSView {
 		if selector == #selector(deleteBackward(_:)) {
 			layoutEngine.deleteBackward()
 			setNeedsDisplay(bounds)
+		} else if selector == #selector(moveLeft(_:)) {
+			layoutEngine.moveCursor(direction: .left)
+			setNeedsDisplay(bounds)
+		} else if selector == #selector(moveRight(_:)) {
+			layoutEngine.moveCursor(direction: .right)
+			setNeedsDisplay(bounds)
+		} else if selector == #selector(moveUp(_:)) {
+			layoutEngine.moveCursor(direction: .up)
+			setNeedsDisplay(bounds)
+		} else if selector == #selector(moveDown(_:)) {
+			layoutEngine.moveCursor(direction: .down)
+			setNeedsDisplay(bounds)
+		} else if selector == #selector(moveLeftAndModifySelection(_:)) {
+			layoutEngine.moveCursor(direction: .left, modifySelection: true)
+			setNeedsDisplay(bounds)
+		} else if selector == #selector(moveRightAndModifySelection(_:)) {
+			layoutEngine.moveCursor(direction: .right, modifySelection: true)
+			setNeedsDisplay(bounds)
+		} else if selector == #selector(moveUpAndModifySelection(_:)) {
+			layoutEngine.moveCursor(direction: .up, modifySelection: true)
+			setNeedsDisplay(bounds)
+		} else if selector == #selector(moveDownAndModifySelection(_:)) {
+			layoutEngine.moveCursor(direction: .down, modifySelection: true)
+			setNeedsDisplay(bounds)
 		} else if responds(to: selector) {
 			perform(selector)
 		}
