@@ -32,6 +32,7 @@ struct ContentView: View {
 			)
 			.frame(maxWidth: .infinity, maxHeight: .infinity)
 			.border(Color.gray)
+			.ignoresSafeArea(.keyboard, edges: .bottom)
 		}
 		.padding()
 	}

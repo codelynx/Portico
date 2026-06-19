@@ -123,20 +123,39 @@ extension PorticoTextView: @preconcurrency NSTextInputClient {
 		return [NSAttributedString.Key(kCTUnderlineStyleAttributeName as String)] 
 	}
 	
-	public func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect { return .zero }
+	public func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+		actualRange?.pointee = range
+		let localRect = layoutEngine.rect(forCharacterRange: range)
+		
+		var adjustedRect = localRect
+		if layoutEngine.orientation == .vertical {
+			// In macOS coordinate space (bottom-up), maxY is visually the TOP of the rect.
+			// maxX is visually the RIGHT edge.
+			// The OS anchors the popup to the bottom-left of the provided NSRect.
+			// By providing a 0x0 rect at the top-right of the character, the popup 
+			// will appear to the right of the vertical column, avoiding obscuring the text!
+			adjustedRect = CGRect(x: localRect.maxX, y: localRect.maxY, width: 0, height: 0)
+		}
+		
+		let windowRect = convert(adjustedRect, to: nil)
+		guard let window = self.window else { return .zero }
+		return window.convertToScreen(windowRect)
+	}
 	public func characterIndex(for point: NSPoint) -> Int { return 0 }
 }
 
 #elseif os(iOS)
 import UIKit
 
-public class PorticoTextView: UIView, UIKeyInput {
+public class PorticoTextView: UIView, UITextInput {
+	
 	public let layoutEngine: PorticoTextLayoutEngine
 	
 	public init(frame: CGRect, layoutEngine: PorticoTextLayoutEngine) {
 		self.layoutEngine = layoutEngine
 		super.init(frame: frame)
 		self.backgroundColor = .clear
+		self.contentMode = .redraw
 		
 		let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
 		addGestureRecognizer(tap)
@@ -150,6 +169,14 @@ public class PorticoTextView: UIView, UIKeyInput {
 	}
 	
 	public override var canBecomeFirstResponder: Bool { return true }
+	
+	public override func layoutSubviews() {
+		super.layoutSubviews()
+		if layoutEngine.bounds != bounds.size {
+			layoutEngine.update(bounds: bounds.size)
+			setNeedsDisplay()
+		}
+	}
 	
 	@objc private func handleTap(_ gesture: UITapGestureRecognizer) {
 		becomeFirstResponder()
@@ -186,19 +213,161 @@ public class PorticoTextView: UIView, UIKeyInput {
 		context.restoreGState()
 	}
 	
-	// MARK: - UIKeyInput
-	public var hasText: Bool {
-		return layoutEngine.attributedString.length > 0
-	}
-	
+	// MARK: - UIKeyInput overrides (already inherited by UITextInput)
+	public var hasText: Bool { return layoutEngine.attributedString.length > 0 }
 	public func insertText(_ text: String) {
 		layoutEngine.insertText(text)
 		setNeedsDisplay()
 	}
-	
 	public func deleteBackward() {
 		layoutEngine.deleteBackward()
 		setNeedsDisplay()
 	}
+
+	// MARK: - UITextInput
+	public func text(in range: UITextRange) -> String? {
+		guard let r = (range as? PorticoTextRange)?.range else { return nil }
+		return (layoutEngine.attributedString.string as NSString).substring(with: r)
+	}
+
+	public func replace(_ range: UITextRange, withText text: String) {
+		guard let r = (range as? PorticoTextRange)?.range else { return }
+		layoutEngine.selectionRange = r
+		layoutEngine.insertText(text)
+		setNeedsDisplay()
+	}
+
+	public var selectedTextRange: UITextRange? {
+		get {
+			if let sr = layoutEngine.selectionRange {
+				return PorticoTextRange(range: sr)
+			}
+			return PorticoTextRange(range: NSRange(location: layoutEngine.cursorIndex, length: 0))
+		}
+		set {
+			if let r = (newValue as? PorticoTextRange)?.range {
+				if r.length == 0 {
+					layoutEngine.cursorIndex = r.location
+					layoutEngine.selectionRange = nil
+				} else {
+					layoutEngine.cursorIndex = r.location + r.length
+					layoutEngine.selectionRange = r
+				}
+				setNeedsDisplay()
+			}
+		}
+	}
+
+	public var markedTextRange: UITextRange? {
+		if let mr = layoutEngine.markedRange { return PorticoTextRange(range: mr) }
+		return nil
+	}
+
+	public var markedTextStyle: [NSAttributedString.Key : Any]? {
+		get { return [.underlineStyle: NSUnderlineStyle.single.rawValue] }
+		set { }
+	}
+
+	public func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+		let textToInsert = markedText ?? ""
+		layoutEngine.setMarkedText(textToInsert, selectedRange: selectedRange, replacementRange: nil)
+		setNeedsDisplay()
+	}
+
+	public func unmarkText() {
+		layoutEngine.unmarkText()
+		setNeedsDisplay()
+	}
+
+	public var beginningOfDocument: UITextPosition { return PorticoTextPosition(index: 0) }
+	public var endOfDocument: UITextPosition { return PorticoTextPosition(index: layoutEngine.attributedString.length) }
+
+	public func textRange(from fromPosition: UITextPosition, to toPosition: UITextPosition) -> UITextRange? {
+		guard let start = (fromPosition as? PorticoTextPosition)?.index,
+			  let end = (toPosition as? PorticoTextPosition)?.index else { return nil }
+		let range = NSRange(location: min(start, end), length: abs(end - start))
+		return PorticoTextRange(range: range)
+	}
+
+	public func position(from position: UITextPosition, offset: Int) -> UITextPosition? {
+		guard let p = (position as? PorticoTextPosition)?.index else { return nil }
+		let newPos = p + offset
+		if newPos < 0 || newPos > layoutEngine.attributedString.length { return nil }
+		return PorticoTextPosition(index: newPos)
+	}
+
+	public func position(from position: UITextPosition, in direction: UITextLayoutDirection, offset: Int) -> UITextPosition? {
+		guard let p = (position as? PorticoTextPosition)?.index else { return nil }
+		let sign = (direction == .left || direction == .up) ? -1 : 1
+		let newPos = p + (sign * offset)
+		if newPos < 0 || newPos > layoutEngine.attributedString.length { return nil }
+		return PorticoTextPosition(index: newPos)
+	}
+
+	public func position(within range: UITextRange, farthestIn direction: UITextLayoutDirection) -> UITextPosition? { return nil }
+	public func characterRange(byExtending position: UITextPosition, in direction: UITextLayoutDirection) -> UITextRange? { return nil }
+
+	public var inputDelegate: UITextInputDelegate?
+
+	public lazy var tokenizer: UITextInputTokenizer = {
+		return UITextInputStringTokenizer(textInput: self)
+	}()
+
+	// MARK: Geometry/Layout
+	public func baseWritingDirection(for position: UITextPosition, in direction: UITextStorageDirection) -> NSWritingDirection { return .leftToRight }
+	public func setBaseWritingDirection(_ writingDirection: NSWritingDirection, for range: UITextRange) {}
+
+	public func firstRect(for textRange: UITextRange) -> CGRect {
+		guard let r = (textRange as? PorticoTextRange)?.range else { return .zero }
+		let localRect = layoutEngine.rect(forCharacterRange: r)
+		// Flip Y for UIKit
+		return CGRect(x: localRect.origin.x, y: bounds.height - localRect.maxY, width: localRect.width, height: localRect.height)
+	}
+
+	public func caretRect(for position: UITextPosition) -> CGRect {
+		guard let p = (position as? PorticoTextPosition)?.index else { return .zero }
+		let localRect = layoutEngine.caretRect(for: p)
+		return CGRect(x: localRect.origin.x, y: bounds.height - localRect.maxY, width: localRect.width, height: localRect.height)
+	}
+
+	public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] { return [] }
+
+	public func closestPosition(to point: CGPoint) -> UITextPosition? {
+		let ctPoint = CGPoint(x: point.x, y: bounds.height - point.y)
+		let index = layoutEngine.stringIndex(for: ctPoint)
+		return PorticoTextPosition(index: index)
+	}
+
+	public func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? { return closestPosition(to: point) }
+	public func characterRange(at point: CGPoint) -> UITextRange? { return nil }
+
+	// MARK: Comparisons
+	public func compare(_ position: UITextPosition, to other: UITextPosition) -> ComparisonResult {
+		guard let p1 = (position as? PorticoTextPosition)?.index,
+			  let p2 = (other as? PorticoTextPosition)?.index else { return .orderedSame }
+		if p1 < p2 { return .orderedAscending }
+		if p1 > p2 { return .orderedDescending }
+		return .orderedSame
+	}
+
+	public func offset(from: UITextPosition, to toPosition: UITextPosition) -> Int {
+		guard let p1 = (from as? PorticoTextPosition)?.index,
+			  let p2 = (toPosition as? PorticoTextPosition)?.index else { return 0 }
+		return p2 - p1
+	}
+}
+
+public final class PorticoTextPosition: UITextPosition {
+	public let index: Int
+	public init(index: Int) { self.index = index }
+}
+
+public final class PorticoTextRange: UITextRange {
+	public let range: NSRange
+	public init(range: NSRange) { self.range = range }
+	
+	public override var start: UITextPosition { return PorticoTextPosition(index: range.location) }
+	public override var end: UITextPosition { return PorticoTextPosition(index: range.location + range.length) }
+	public override var isEmpty: Bool { return range.length == 0 }
 }
 #endif

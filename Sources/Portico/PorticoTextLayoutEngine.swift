@@ -261,6 +261,45 @@ public class PorticoTextLayoutEngine {
 		return CTLineGetStringIndexForPosition(closestLine, relativePoint)
 	}
 	
+	public func rect(forCharacterRange range: NSRange) -> CGRect {
+		guard let textFrame = textFrame else { return .zero }
+		let lines = CTFrameGetLines(textFrame) as! [CTLine]
+		guard !lines.isEmpty else { return .zero }
+		
+		var origins = [CGPoint](repeating: .zero, count: lines.count)
+		CTFrameGetLineOrigins(textFrame, CFRangeMake(0, 0), &origins)
+		
+		for i in 0..<lines.count {
+			let line = lines[i]
+			let lineRange = CTLineGetStringRange(line)
+			let nsLineRange = NSRange(location: lineRange.location, length: lineRange.length)
+			let intersection = NSIntersectionRange(nsLineRange, range)
+			
+			if intersection.length > 0 {
+				let startOffset = CTLineGetOffsetForStringIndex(line, intersection.location, nil)
+				let endOffset = CTLineGetOffsetForStringIndex(line, intersection.location + intersection.length, nil)
+				
+				var ascent: CGFloat = 0
+				var descent: CGFloat = 0
+				var leading: CGFloat = 0
+				CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
+				
+				let origin = origins[i]
+				let rectWidthOrHeight = endOffset > startOffset ? endOffset - startOffset : startOffset - endOffset
+				
+				if orientation == .vertical {
+					let yBottom = origin.y - max(startOffset, endOffset)
+					return CGRect(x: origin.x - descent, y: yBottom, width: ascent + descent, height: rectWidthOrHeight)
+				} else {
+					let xLeft = origin.x + min(startOffset, endOffset)
+					return CGRect(x: xLeft, y: origin.y - descent, width: rectWidthOrHeight, height: ascent + descent)
+				}
+			}
+		}
+		
+		return caretRect(for: range.location)
+	}
+	
 	public func caretRect(for index: Int) -> CGRect {
 		guard let textFrame = textFrame else { return .zero }
 		let lines = CTFrameGetLines(textFrame) as! [CTLine]
@@ -365,7 +404,6 @@ public class PorticoTextLayoutEngine {
 				
 				let rect: CGRect
 				if orientation == .vertical {
-					let yTop = origin.y - min(startOffset, endOffset)
 					let yBottom = origin.y - max(startOffset, endOffset)
 					rect = CGRect(x: origin.x - descent, y: yBottom, width: ascent + descent, height: rectWidthOrHeight)
 				} else {
