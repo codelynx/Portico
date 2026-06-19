@@ -9,11 +9,11 @@ import SwiftUI
 import Portico
 
 struct ContentView: View {
-	@State private var text = NSAttributedString(string: """
-		吾輩は猫である。名前はまだ無い。
-		どこで生れたかとんと見当がつかぬ。何でも薄暗いじめじめした所でニャーニャー泣いていた事だけは記憶している。吾輩はここで始めて人間というものを見た。しかもあとで聞くとそれは書生という人間中で一番獰悪な種族であったそうだ。この書生というのは時々我々を捕えて煮て食うという話である。しかしその当時は何という考もなかったから別段恐しいとも思わなかった。ただ彼の掌に載せられてスーと持ち上げられた時何だかフワフワした感じがあったばかりである。掌の上で少し落ちついて書生の顔を見たのがいわゆる人間というものの見始であろう。
-		
-		Portico is a custom, high-performance text editor engine built directly on top of Core Text. It mathematically handles native hit-testing, selection range tracking, and input event management, allowing for seamless toggling between horizontal and vertical layouts without compromising standard text editor capabilities.
+	@State private var text = PorticoRuby.parse("""
+		吾輩《わがはい》は猫《ねこ》である。名前《なまえ》はまだ無《な》い。
+		どこで生《う》れたかとんと見当《けんとう》がつかぬ。何《なに》でも薄暗《うすぐら》いじめじめした所《ところ》でニャーニャー泣《な》いていた事《こと》だけは記憶《きおく》している。吾輩はここで始《はじ》めて人間《にんげん》というものを見た。
+
+		Portico is a custom, high-performance text editor engine built directly on top of Core Text.
 		""")
 	@State private var orientation: PorticoLayoutOrientation = .horizontal
 	
