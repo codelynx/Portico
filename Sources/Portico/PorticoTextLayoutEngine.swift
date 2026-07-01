@@ -188,15 +188,8 @@ public class PorticoTextLayoutEngine {
 			selectionRange = nil
 			selectionAnchorIndex = nil
 		}
-		
-		setNeedsDisplay()
 	}
-	
-	private func setNeedsDisplay() {
-		// Just trigger a re-draw notification (handled by whoever owns textDidChange if needed, or view directly)
-		// Wait, view triggers setNeedsDisplay itself, so we don't strictly need to call textDidChange unless text changed.
-	}
-	
+
 	public func insertText(_ text: String) {
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
 		let attrs = cursorIndex > 0 ? mutableString.attributes(at: cursorIndex - 1, effectiveRange: nil) : [:]
