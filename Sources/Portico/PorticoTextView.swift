@@ -169,7 +169,40 @@ public class PorticoTextView: UIView, UITextInput {
 	}
 	
 	public override var canBecomeFirstResponder: Bool { return true }
-	
+
+	// MARK: - Hardware keyboard navigation
+	// Mirrors the macOS `doCommand(by:)` path: arrow keys move the caret, Shift+arrow
+	// extends the selection. Both platforms funnel into the same engine call, so the
+	// behavior stays identical. Scope matches macOS — arrows only, no word/line jumps.
+	public override var keyCommands: [UIKeyCommand]? {
+		let arrows = [
+			UIKeyCommand.inputLeftArrow,
+			UIKeyCommand.inputRightArrow,
+			UIKeyCommand.inputUpArrow,
+			UIKeyCommand.inputDownArrow,
+		]
+		return arrows.flatMap { input in
+			[
+				UIKeyCommand(input: input, modifierFlags: [], action: #selector(handleMove(_:))),
+				UIKeyCommand(input: input, modifierFlags: .shift, action: #selector(handleMove(_:))),
+			]
+		}
+	}
+
+	@objc private func handleMove(_ command: UIKeyCommand) {
+		let direction: PorticoTextLayoutEngine.MoveDirection
+		switch command.input {
+		case UIKeyCommand.inputLeftArrow: direction = .left
+		case UIKeyCommand.inputRightArrow: direction = .right
+		case UIKeyCommand.inputUpArrow: direction = .up
+		case UIKeyCommand.inputDownArrow: direction = .down
+		default: return
+		}
+		let modifySelection = command.modifierFlags.contains(.shift)
+		layoutEngine.moveCursor(direction: direction, modifySelection: modifySelection)
+		setNeedsDisplay()
+	}
+
 	public override func layoutSubviews() {
 		super.layoutSubviews()
 		if layoutEngine.bounds != bounds.size {
