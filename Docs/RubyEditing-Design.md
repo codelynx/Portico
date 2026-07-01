@@ -119,6 +119,36 @@ IME concern dissolves with a "committed text only" trigger.)*
 - **(deferred) Inline / vertical direct entry.** The most delightful, the hardest. Deferred;
   used as the §5 completeness acceptance test rather than built now.
 
+### 7.1 UX recommendation per platform
+
+The framework supports all patterns (each reduces to *current-group query* + `setRuby` +
+optional geometry). What follows is the recommended **primary path** and **Example
+reference**, not a mandate on clients.
+
+| Pattern | In-flow feel | Discoverable | Bulk edit | Screen cost | Vertical | API needed |
+|---|---|---|---|---|---|---|
+| **Inspector** (persistent field) | ✗ eyes leave text | ✅✅ | ✅✅ | high | ✅ (separate UI) | current-group + `setRuby` |
+| **Popover** (anchored on base) | ~ near text | ✅ | ~ open/close friction | low | ⚠️ arrow placement | + `anchorRect(…)` |
+| **Direct / inline notation** (`《かんじ》`) | ✅✅ fully | ✗ must know markup | ✅ fluent authors | none | parser + insert hook |
+
+*(A floating **in-flow reading editor** on the base is the deferred §7 "direct entry" — the
+most delightful and the hardest, especially vertical.)*
+
+**Recommendation:**
+- **Primary = direct / inline notation.** Keyboard-first, zero UI, identical horizontal/
+  vertical, all platforms; matches how novelists already write. The power path.
+- **Reference (pointing) = platform-idiomatic:**
+  - **macOS → inspector** — discoverable, good for bulk furigana passes, needs *no* geometry,
+    and is the MS Word ルビ-dialog muscle memory. Cheapest to demo.
+  - **iOS → popover** anchored to the tapped group — the touch idiom, and it **exercises the
+    `anchorRect` geometry primitive**, which is the acceptance test that the API is truly
+    client-agnostic.
+- **Defer the in-flow reading editor** (esp. vertical) — but `rects(…)` leaves the door open.
+
+**Why this split:** fluent authors get the fast keyboard path everywhere; discoverability
+comes from the native pointing idiom per platform; and the iOS popover *forces* the geometry
+primitives to be proven — the whole API's completeness check.
+
 ## 8. Display
 
 When a base is selected, **highlight its reading too** — a group reads as one unit even
