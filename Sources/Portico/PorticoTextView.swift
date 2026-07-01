@@ -363,7 +363,20 @@ public class PorticoTextView: UIView, UITextInput {
 		return CGRect(x: localRect.origin.x, y: bounds.height - localRect.maxY, width: localRect.width, height: localRect.height)
 	}
 
-	public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] { return [] }
+	public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
+		guard let r = (range as? PorticoTextRange)?.range, r.length > 0 else { return [] }
+		let rects = layoutEngine.selectionRects(for: r)
+		let isVertical = layoutEngine.orientation == .vertical
+		return rects.enumerated().map { index, localRect in
+			// Core Text (bottom-left) → UIKit (top-left), same flip as caretRect/firstRect.
+			let flipped = CGRect(x: localRect.origin.x, y: bounds.height - localRect.maxY,
+								 width: localRect.width, height: localRect.height)
+			return PorticoTextSelectionRect(rect: flipped,
+											containsStart: index == 0,
+											containsEnd: index == rects.count - 1,
+											isVertical: isVertical)
+		}
+	}
 
 	public func closestPosition(to point: CGPoint) -> UITextPosition? {
 		let ctPoint = CGPoint(x: point.x, y: bounds.height - point.y)
@@ -402,5 +415,29 @@ public final class PorticoTextRange: UITextRange {
 	public override var start: UITextPosition { return PorticoTextPosition(index: range.location) }
 	public override var end: UITextPosition { return PorticoTextPosition(index: range.location + range.length) }
 	public override var isEmpty: Bool { return range.length == 0 }
+}
+
+/// Per-line selection geometry handed to UIKit through `UITextInput`. Supplies the
+/// rects UIKit *would* use for selection handles / magnifier — rendering that system
+/// UI additionally requires a `UITextInteraction`, which isn't installed yet.
+/// Internal: callers only ever see the abstract `[UITextSelectionRect]`.
+final class PorticoTextSelectionRect: UITextSelectionRect {
+	private let _rect: CGRect
+	private let _containsStart: Bool
+	private let _containsEnd: Bool
+	private let _isVertical: Bool
+
+	init(rect: CGRect, containsStart: Bool, containsEnd: Bool, isVertical: Bool) {
+		self._rect = rect
+		self._containsStart = containsStart
+		self._containsEnd = containsEnd
+		self._isVertical = isVertical
+	}
+
+	override var rect: CGRect { _rect }
+	override var writingDirection: NSWritingDirection { .leftToRight }
+	override var containsStart: Bool { _containsStart }
+	override var containsEnd: Bool { _containsEnd }
+	override var isVertical: Bool { _isVertical }
 }
 #endif

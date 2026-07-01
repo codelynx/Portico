@@ -344,7 +344,46 @@ public class PorticoTextLayoutEngine {
 		}
 		return .zero
 	}
-	
+
+	/// One fill rect per line that `range` intersects, in layout (Core Text,
+	/// bottom-left origin) coordinates. Unlike `rect(forCharacterRange:)`, which
+	/// returns only the first line, this spans a multi-line selection. Shared by the
+	/// on-screen selection highlight and iOS `UITextInput.selectionRects(for:)`.
+	public func selectionRects(for range: NSRange) -> [CGRect] {
+		guard let textFrame = textFrame, range.length > 0 else { return [] }
+		let lines = CTFrameGetLines(textFrame) as! [CTLine]
+		guard !lines.isEmpty else { return [] }
+
+		var origins = [CGPoint](repeating: .zero, count: lines.count)
+		CTFrameGetLineOrigins(textFrame, CFRangeMake(0, 0), &origins)
+
+		var rects: [CGRect] = []
+		for i in 0..<lines.count {
+			let line = lines[i]
+			let lineRange = CTLineGetStringRange(line)
+			let nsLineRange = NSRange(location: lineRange.location, length: lineRange.length)
+			let intersection = NSIntersectionRange(nsLineRange, range)
+			guard intersection.length > 0 else { continue }
+
+			let startOffset = CTLineGetOffsetForStringIndex(line, intersection.location, nil)
+			let endOffset = CTLineGetOffsetForStringIndex(line, intersection.location + intersection.length, nil)
+
+			var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
+			CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
+
+			let origin = origins[i]
+			let extent = abs(endOffset - startOffset)
+			if orientation == .vertical {
+				let yBottom = origin.y - max(startOffset, endOffset)
+				rects.append(CGRect(x: origin.x - descent, y: yBottom, width: ascent + descent, height: extent))
+			} else {
+				let xLeft = origin.x + min(startOffset, endOffset)
+				rects.append(CGRect(x: xLeft, y: origin.y - descent, width: extent, height: ascent + descent))
+			}
+		}
+		return rects
+	}
+
 	/// Natural height of a line that carries one row of ruby, measured from a real
 	/// CTLine using the string's own base attributes. Self-calibrating: it reflects
 	/// the font Core Text actually uses (including CJK fallbacks) and the real ruby
@@ -429,43 +468,10 @@ public class PorticoTextLayoutEngine {
 	}
 	
 	private func drawSelection(in context: CGContext) {
-		guard let textFrame = textFrame, let selectionRange = selectionRange else { return }
-		let lines = CTFrameGetLines(textFrame) as! [CTLine]
-		guard !lines.isEmpty else { return }
-		
-		var origins = [CGPoint](repeating: .zero, count: lines.count)
-		CTFrameGetLineOrigins(textFrame, CFRangeMake(0, 0), &origins)
-		
+		guard let selectionRange = selectionRange else { return }
 		context.setFillColor(CGColor(red: 0.0, green: 0.5, blue: 1.0, alpha: 0.3))
-		
-		for i in 0..<lines.count {
-			let line = lines[i]
-			let lineRange = CTLineGetStringRange(line)
-			let nsLineRange = NSRange(location: lineRange.location, length: lineRange.length)
-			let intersection = NSIntersectionRange(nsLineRange, selectionRange)
-			
-			if intersection.length > 0 {
-				let startOffset = CTLineGetOffsetForStringIndex(line, intersection.location, nil)
-				let endOffset = CTLineGetOffsetForStringIndex(line, intersection.location + intersection.length, nil)
-				
-				var ascent: CGFloat = 0
-				var descent: CGFloat = 0
-				var leading: CGFloat = 0
-				CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
-				
-				let origin = origins[i]
-				let rectWidthOrHeight = endOffset > startOffset ? endOffset - startOffset : startOffset - endOffset
-				
-				let rect: CGRect
-				if orientation == .vertical {
-					let yBottom = origin.y - max(startOffset, endOffset)
-					rect = CGRect(x: origin.x - descent, y: yBottom, width: ascent + descent, height: rectWidthOrHeight)
-				} else {
-					let xLeft = origin.x + min(startOffset, endOffset)
-					rect = CGRect(x: xLeft, y: origin.y - descent, width: rectWidthOrHeight, height: ascent + descent)
-				}
-				context.fill(rect)
-			}
+		for rect in selectionRects(for: selectionRange) {
+			context.fill(rect)
 		}
 	}
 	
