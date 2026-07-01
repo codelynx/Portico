@@ -59,7 +59,9 @@ Resolved shape (agents converged; the collapse and index-addressing were review 
   rubyGroups(in range: NSRange) -> [(base: NSRange, reading: String)]
   ```
   All `NSRange` are **UTF-16, half-open Foundation ranges**. `rubyGroup(at:)` returns a group
-  only for an index **strictly inside** the base (not at the end boundary).
+  only for an index **strictly inside** the base (not at the end boundary) — so the junction
+  index between two adjacent groups belongs to the *following* group. Clients wanting a
+  "nearest group" (e.g. a caret just past the last kanji) handle that boundary themselves.
 - **Overlap rule (define now):** `setRuby` over a range intersecting existing groups
   **replaces** them — attribute-set semantics: destructive, predictable. Precisely: remove
   the **full ranges** of all intersecting ruby groups, then apply the new reading to
@@ -75,8 +77,8 @@ Resolved shape (agents converged; the collapse and index-addressing were review 
   rects(forRubyGroupContaining index: Int) -> [CGRect]    // plural — a group can wrap across lines/columns
   anchorRect(forRubyGroupContaining index: Int) -> CGRect // one rect for popover placement
   ```
-  **Acceptance test for the API's completeness:** "could the deferred inline/popover
-  vertical editor (§7b) be built purely on the public API?" With these primitives, yes.
+  **Acceptance test for the API's completeness:** "could the deferred in-flow reading editor
+  (§7c) be built purely on the public API?" With these primitives, yes.
 
 Shape mirrors the existing pure `PorticoRuby.parse`/`serialize` (attributed-string in/out,
 unit-testable), rather than a new stateful subsystem.
@@ -109,15 +111,16 @@ The reviewers changed my mind — Japanese novelists already author with inline 
 on the dominant platforms (narou, kakuyomu) and vertical editors (TATEditor, 縦式), and the
 IME concern dissolves with a "committed text only" trigger.)*
 
-- **(primary, keyboard-first) Inline notation conversion.** Type `漢字《かんじ》` (and the
+- **(a) Inline notation conversion** — *primary, keyboard-first.* Type `漢字《かんじ》` (and the
   `｜` explicit-base form the parser already supports) and it converts on the closing `》`.
   Contract: converts **only on committed text — never inside IME marked text**; cleanly
   **undoable** back to the literal characters (escape hatch for a literal `》`).
-- **(reference API validation) Select base → set/edit reading.** Selection → query →
-  `setRuby`. This is the MS Word ルビ-dialog idiom; ship it as the **Example app's** demo
-  (a small popover/field), proving the primitives against a real workflow.
-- **(deferred) Inline / vertical direct entry.** The most delightful, the hardest. Deferred;
-  used as the §5 completeness acceptance test rather than built now.
+- **(b) Select base → set/edit reading** — *reference API validation.* Selection → query →
+  `setRuby`; the MS Word ルビ-dialog idiom. Ship it as the **Example app's** demo — see §7.1
+  for the per-platform form.
+- **(c) In-flow reading editor** — *deferred.* Editing the reading in place on the base — the
+  most delightful, the hardest (especially vertical). Deferred; used as the §5 completeness
+  acceptance test rather than built now.
 
 ### 7.1 UX recommendation per platform
 
@@ -151,16 +154,21 @@ primitives to be proven — the whole API's completeness check.
 
 ## 8. Display
 
-When a base is selected, **highlight its reading too** — a group reads as one unit even
-though it edits as text. (Consciously decided; previously undefined.)
+When a selection **intersects** a ruby base, **highlight its reading too**, always as a
+**whole** (a partially-highlighted reading would imply per-mora mapping — a non-goal). A
+group reads as one unit even though it edits as text. (Consciously decided; previously
+undefined.)
 
 ## 9. Correctness / acceptance criteria
 
-- **Round-trip after every edit:** post-edit, the buffer must `serialize` to valid notation
-  and `parse` back to the **same text + ruby-group semantics** (base ranges + readings — not
-  every attributed-string styling attribute byte-for-byte). Extending the existing
-  parse/serialize idempotence tests over **post-edit states** is the cheapest correctness net
-  and forces §6 to be self-consistent.
+- **Round-trip after every edit — for serializable states.** If the base text and readings
+  contain **no literal Aozora control characters** (`《`, `》`, `｜`), the buffer must
+  `serialize` to valid notation and `parse` back to the **same text + ruby-group semantics**
+  (base ranges + readings — not every attributed-string styling attribute byte-for-byte).
+  States containing literal control characters remain valid in memory but are **outside v1's
+  round-trip guarantee** until escaping exists (see RubySupport.md §3.1/§4 and §12 below).
+  Extending the existing parse/serialize idempotence tests over **post-edit states** is the
+  cheapest correctness net and forces §6 to be self-consistent.
 - **Invariant (§3) holds** after every mutation and normalization.
 - **Boundary/inheritance rule (§6)** covered by tests.
 
@@ -169,9 +177,10 @@ though it edits as text. (Consciously decided; previously undefined.)
 1. **Fix the insertion/inheritance boundary rule** (§6) — isolated, correct regardless.
 2. **Primitives** — `setRuby` + `rubyGroup(at:)` / `rubyGroups(in:)` + tests (pure, no UI).
 3. **Post-edit normalization pass** (§6) — the real engine work; the round-trip tests gate it.
-4. **Geometry primitives** — `rubyGroup(at point:)`, `rect(forRubyGroupAt:)`.
-5. **Inline notation conversion** (§7 primary) with the committed-text/undo contract.
-6. **Example demo** — select → popover reading field (§7 reference).
+4. **Geometry primitives** — `rubyGroup(at point:)`, `rects(forRubyGroupContaining:)`,
+   `anchorRect(forRubyGroupContaining:)`.
+5. **Inline notation conversion** (§7a) with the committed-text/undo contract.
+6. **Example demo** — select → reading, per §7.1 (inspector on macOS, popover on iOS).
 
 ## 11. Open questions (for further discussion)
 
@@ -190,4 +199,6 @@ though it edits as text. (Consciously decided; previously undefined.)
   transiently knows the kana typed before conversion; offer "use what you just typed as the
   ruby." Falls out nearly free *if* the framework later exposes a composition-commit hook —
   a genuine differentiator.
-- Vertical direct reading entry (§7b), split/merge, per-mora alignment.
+- **Escaping / literal-marker support** for base text containing literal `《`, `》`, or `｜`
+  — would extend the §9 round-trip guarantee to those states (RubySupport.md §3.1/§4).
+- In-flow reading editor (§7c), split/merge, per-mora alignment.
