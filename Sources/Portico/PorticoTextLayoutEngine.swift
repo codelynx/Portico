@@ -1,6 +1,11 @@
 import Foundation
 import CoreText
 import CoreGraphics
+#if canImport(AppKit)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 public enum PorticoLayoutOrientation {
 	case horizontal
@@ -340,6 +345,40 @@ public class PorticoTextLayoutEngine {
 		return .zero
 	}
 	
+	/// Natural height of a line that carries one row of ruby, measured from a real
+	/// CTLine using the string's own base attributes. Self-calibrating: it reflects
+	/// the font Core Text actually uses (including CJK fallbacks) and the real ruby
+	/// ascent, so no hand-tuned reserve ratio is needed.
+	private func rubyLinePitch() -> CGFloat {
+		var attrs: [NSAttributedString.Key: Any] = [:]
+		if attributedString.length > 0 {
+			attrs = attributedString.attributes(at: 0, effectiveRange: nil)
+			attrs.removeValue(forKey: NSAttributedString.Key(kCTRubyAnnotationAttributeName as String))
+		}
+		let sample = NSMutableAttributedString(string: "永", attributes: attrs) // representative CJK glyph
+		let annotation = CTRubyAnnotationCreateWithAttributes(.center, .auto, .before, "ル" as CFString, [:] as CFDictionary)
+		sample.addAttribute(
+			NSAttributedString.Key(kCTRubyAnnotationAttributeName as String),
+			value: annotation,
+			range: NSRange(location: 0, length: 1)
+		)
+		let line = CTLineCreateWithAttributedString(sample as CFAttributedString)
+		var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
+		CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
+		return ascent + descent + leading
+	}
+
+	/// Line origins of the current frame, in layout coordinates. Exposed for tests
+	/// that assert uniform line pitch.
+	func lineOrigins() -> [CGPoint] {
+		guard let textFrame = textFrame else { return [] }
+		let lines = CTFrameGetLines(textFrame) as! [CTLine]
+		guard !lines.isEmpty else { return [] }
+		var origins = [CGPoint](repeating: .zero, count: lines.count)
+		CTFrameGetLineOrigins(textFrame, CFRangeMake(0, 0), &origins)
+		return origins
+	}
+
 	private func updateLayout() {
 		guard bounds.width > 0 && bounds.height > 0 else {
 			self.frameSetter = nil
@@ -347,17 +386,32 @@ public class PorticoTextLayoutEngine {
 			return
 		}
 		
-		// Prepare string with vertical attributes if needed
-		let stringToLayout: NSAttributedString
-		if orientation == .vertical {
-			let mutableString = NSMutableAttributedString(attributedString: attributedString)
-			// .verticalGlyphForm allows Core Text to substitute vertical variants of characters if the font supports it.
-			let range = NSRange(location: 0, length: mutableString.length)
-			mutableString.addAttribute(.verticalGlyphForm, value: true, range: range)
-			stringToLayout = mutableString
-		} else {
-			stringToLayout = attributedString
+		// Prepare the string for layout. We always apply a fixed line pitch (and,
+		// for vertical text, vertical glyph forms) so we work on a copy.
+		let mutableString = NSMutableAttributedString(attributedString: attributedString)
+		let fullRange = NSRange(location: 0, length: mutableString.length)
+
+		// Reserve a uniform line-to-line pitch large enough to hold ruby on every
+		// line, so lines stay evenly spaced whether or not they carry ruby (no
+		// デコボコ). Merge it into any caller-supplied paragraph style rather than
+		// overwriting, so alignment / indents / spacing survive.
+		let pitch = rubyLinePitch()
+		var styleUpdates: [(NSRange, NSParagraphStyle)] = []
+		mutableString.enumerateAttribute(.paragraphStyle, in: fullRange) { value, range, _ in
+			let style = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
+			style.minimumLineHeight = pitch
+			style.maximumLineHeight = pitch
+			styleUpdates.append((range, style))
 		}
+		for (range, style) in styleUpdates {
+			mutableString.addAttribute(.paragraphStyle, value: style, range: range)
+		}
+
+		if orientation == .vertical {
+			// .verticalGlyphForm allows Core Text to substitute vertical variants of characters if the font supports it.
+			mutableString.addAttribute(.verticalGlyphForm, value: true, range: fullRange)
+		}
+		let stringToLayout: NSAttributedString = mutableString
 		
 		let setter = CTFramesetterCreateWithAttributedString(stringToLayout as CFAttributedString)
 		self.frameSetter = setter

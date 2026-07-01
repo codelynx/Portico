@@ -58,26 +58,25 @@ text. Two ways to mark where the base begins:
 
 ## 4. Public API surface
 
-The notation is the public surface. Two namespaced calls — `parse` ships in
-Phase 1; `serialize` is **planned for Phase 2** (not yet implemented):
+The notation is the public surface. Two namespaced calls, both implemented:
 
 ```
-// Phase 1 — implemented.
 // Parse Aozora notation into an attributed string with ruby annotations.
 PorticoRuby.parse(_ notation: String, attributes: [NSAttributedString.Key: Any] = [:]) -> NSAttributedString
 
-// Phase 2 — planned, not yet implemented.
 // Serialize an attributed string (with ruby annotations) back to notation.
 PorticoRuby.serialize(_ attributed: NSAttributedString) -> String
 ```
 
 - `parse` strips all ruby marks from the body, attaches a `CTRubyAnnotation`
   per base range, and applies `attributes` (font, color, …) to the whole string.
-- `serialize` (Phase 2) will walk ruby annotations and re-emit marks, always
-  using the **explicit `｜` form** on output (unambiguous, lossless round-trip),
-  even where the input used auto-detection.
-- Planned round-trip guarantee: `serialize(parse(x))` *semantically* equal to `x`
-  (same base text + readings), though `｜` placement may be normalized.
+- `serialize` walks ruby annotations and re-emits marks, always using the
+  **explicit `｜` form** on output (unambiguous regardless of base content), even
+  where the input used auto-detection.
+- Round-trip guarantee: `parse(serialize(x))` reproduces the same base text and
+  readings; `｜` placement is normalized to the explicit form. (Base text holding
+  literal `《`/`》`/`｜` can't round-trip — no escaping in v1 — but `parse` never
+  produces such bases, so its output always round-trips.)
 
 An internal primitive (not public in v1) does the actual attach:
 
@@ -88,6 +87,29 @@ extension NSMutableAttributedString {
 }
 ```
 
+### 4.1 Client usage
+
+Ruby is reachable from any client that links the library with a plain
+`import Portico`. The authored string drops straight into the engine or the
+SwiftUI view; uniform line-to-line pitch (§5.1) is applied automatically — the
+client does nothing extra for it.
+
+```swift
+import Portico
+
+// Author ruby from notation, then render it.
+let text = PorticoRuby.parse("吾輩《わがはい》は猫《ねこ》である")
+
+// SwiftUI:
+PorticoView(text: .constant(text), orientation: .vertical)
+
+// or drive the engine directly:
+let engine = PorticoTextLayoutEngine(attributedString: text, orientation: .vertical)
+```
+
+A regression test (`PorticoRubyClientTests.swift`) exercises this path with a
+non-`@testable` import, so the public surface stays intact.
+
 ## 5. Rendering defaults
 
 Hard-coded sane defaults in v1, no public knobs yet:
@@ -97,6 +119,23 @@ Hard-coded sane defaults in v1, no public knobs yet:
 - scale / sizeFactor: Core Text default (~0.5 of base)
 
 These become parameters in a later phase if needed.
+
+### 5.1 Uniform line-to-line pitch
+
+Ruby normally inflates the height of the line that carries it, making the
+line-to-line pitch uneven (デコボコ) next to ruby-free lines. To keep lines
+evenly spaced, the layout engine reserves a **fixed line-to-line pitch on every
+line**, sized to a ruby-bearing line and self-calibrated from the base font (no
+tuning constant). Applied uniformly to all text the engine lays out — not just
+parsed ruby — and in both orientations (line-to-line for horizontal,
+column-to-column for vertical). The pitch is **merged into** any caller-supplied
+paragraph style (alignment, indents, spacing are preserved), not overwritten.
+
+**Known limitation:** Core Text does not fully contain a ruby annotation's
+ascent within the line box, so a small residual (a fraction of a base line)
+remains on ruby lines. This removes the bulk of the unevenness but is not
+pixel-perfect. Exact uniformity would require manual per-line placement, which
+is deferred (it would complicate the vertical `CTFrameDraw` path).
 
 ## 6. Out of scope (v1)
 
@@ -117,13 +156,16 @@ The annotation survives in the attributed string under edits; we just don't yet
 1. **Parse + render** — `PorticoRuby.parse`, demonstrated in the Example app.
    ✅ Code + tests done (`PorticoRuby.swift`, `PorticoRubyTests.swift`).
    ✅ Visual rendering verified — macOS Example app, horizontal + vertical.
-2. **Serialize** — round-trip to text → persistence. _(next)_
+2. **Serialize** — round-trip to text → persistence.
+   ✅ `PorticoRuby.serialize` + round-trip tests done.
 3. **Editing semantics** — atomic group, cursor policy. (Future, separate spec.)
 
 ## 8. Files
 
-- `Sources/Portico/PorticoRuby.swift` — parser + internal attach primitive
-  (serializer added in Phase 2).
-- `Tests/PorticoTests/PorticoRubyTests.swift` — parse + §3.1 edge cases
-  (serialize / round-trip tests added in Phase 2).
+- `Sources/Portico/PorticoRuby.swift` — parser, serializer, internal attach
+  primitive.
+- `Tests/PorticoTests/PorticoRubyTests.swift` — parse, serialize, round-trip,
+  §3.1 edge cases, and uniform line-to-line pitch.
+- `Tests/PorticoTests/PorticoRubyClientTests.swift` — public-API (non-`@testable`)
+  smoke tests proving ruby is reachable from client code.
 - Example app: a sample string demonstrating ruby in both orientations.

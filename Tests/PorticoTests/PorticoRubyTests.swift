@@ -1,6 +1,11 @@
 import Testing
 import Foundation
 import CoreText
+#if canImport(AppKit)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 @testable import Portico
 
 private let rubyKey = NSAttributedString.Key(kCTRubyAnnotationAttributeName as String)
@@ -115,6 +120,129 @@ private func rubies(_ attributed: NSAttributedString) -> [(base: String, range: 
 	#expect(s.string == "no ruby here")
 	#expect(rubies(s).isEmpty)
 }
+
+// MARK: - Serialize
+
+@Test func serializeEmitsExplicitBaseForm() {
+	let s = PorticoRuby.parse("漢字《かんじ》")
+	#expect(PorticoRuby.serialize(s) == "｜漢字《かんじ》")
+}
+
+@Test func serializeLeavesPlainTextUntouched() {
+	let s = PorticoRuby.parse("ふつうの文。no ruby.")
+	#expect(PorticoRuby.serialize(s) == "ふつうの文。no ruby.")
+}
+
+@Test func serializeHandlesMultipleAndAdjacentGroups() {
+	let s = PorticoRuby.parse("東京《とうきょう》大学《だいがく》へ")
+	#expect(PorticoRuby.serialize(s) == "｜東京《とうきょう》｜大学《だいがく》へ")
+}
+
+@Test func roundTripIsSemanticallyStable() {
+	// parse → serialize → parse must reproduce the same body + readings.
+	let inputs = [
+		"吾輩《わがはい》は猫《ねこ》である",
+		"｜きらきら《・》した",
+		"漢字《かんじ》とplain textと時々《ときどき》",
+		"no ruby at all",
+	]
+	for input in inputs {
+		let once = PorticoRuby.parse(input)
+		let twice = PorticoRuby.parse(PorticoRuby.serialize(once))
+		#expect(once.string == twice.string, "body changed for \(input)")
+		#expect(rubies(once).map { "\($0.base)=\($0.reading)" } == rubies(twice).map { "\($0.base)=\($0.reading)" },
+			"readings changed for \(input)")
+	}
+}
+
+@Test func serializeIgnoresForeignValueUnderRubyKey() {
+	// A non-CTRubyAnnotation value under the ruby key must not trap; emit plain.
+	let m = NSMutableAttributedString(string: "漢字")
+	m.addAttribute(rubyKey, value: "not an annotation" as NSString, range: NSRange(location: 0, length: 2))
+	#expect(PorticoRuby.serialize(m) == "漢字")
+}
+
+@Test func serializeReparseIsIdempotent() {
+	// Serializing already-explicit notation is a fixed point.
+	let once = PorticoRuby.serialize(PorticoRuby.parse("漢字《かんじ》"))
+	let twice = PorticoRuby.serialize(PorticoRuby.parse(once))
+	#expect(once == twice)
+}
+
+// MARK: - Uniform line pitch (ruby must not make spacing デコボコ)
+
+#if canImport(CoreGraphics)
+import CoreGraphics
+
+@Test func linePitchUniformRegardlessOfRuby() {
+	// Lines alternate ruby / no-ruby; baseline-to-baseline pitch must be identical.
+	let lines = ["漢字《かんじ》のある行", "ルビの無い普通の行", "また漢字《かんじ》です", "plain ascii line", "最後《さいご》の行"]
+	let attr = PorticoRuby.parse(lines.joined(separator: "\n"))
+	let engine = PorticoTextLayoutEngine(
+		attributedString: attr,
+		orientation: .horizontal,
+		bounds: CGSize(width: 2000, height: 2000) // wide enough that no line wraps
+	)
+
+	// Pitch is the gap between consecutive line origins.
+	let originY = engine.lineOrigins().map { $0.y }
+	let gaps = zip(originY, originY.dropFirst()).map { abs($0 - $1) }
+
+	#expect(gaps.count == lines.count - 1)
+	let maxGap = gaps.max() ?? 0
+	let minGap = gaps.min() ?? 0
+	#expect(minGap > 0)
+
+	// The reserved pitch flattens most of the ruby inflation. Core Text does not
+	// fully contain a ruby annotation's ascent within the line box, so a small
+	// residual remains (a fraction of a base line, vs. a whole ruby row unfixed).
+	// Assert the residual stays well under one base line height.
+	let baseLine: CGFloat = {
+		let l = CTLineCreateWithAttributedString(NSAttributedString(string: "永") as CFAttributedString)
+		var a: CGFloat = 0, d: CGFloat = 0, lead: CGFloat = 0
+		CTLineGetTypographicBounds(l, &a, &d, &lead)
+		return a + d + lead
+	}()
+	#expect(maxGap - minGap < baseLine * 0.5, "line pitch too uneven: \(gaps)")
+}
+
+@Test func columnPitchUniformInVertical() {
+	// Vertical: the pitch is column-to-column (origin X), and must stay uniform.
+	let cols = ["漢字《かんじ》のある列", "ルビの無い列", "また漢字《かんじ》です"]
+	let attr = PorticoRuby.parse(cols.joined(separator: "\n"))
+	let engine = PorticoTextLayoutEngine(
+		attributedString: attr,
+		orientation: .vertical,
+		bounds: CGSize(width: 2000, height: 2000)
+	)
+	let originX = engine.lineOrigins().map { $0.x }
+	let gaps = zip(originX, originX.dropFirst()).map { abs($0 - $1) }
+	#expect(gaps.count == cols.count - 1)
+	let baseLine: CGFloat = {
+		let l = CTLineCreateWithAttributedString(NSAttributedString(string: "永") as CFAttributedString)
+		var a: CGFloat = 0, d: CGFloat = 0, lead: CGFloat = 0
+		CTLineGetTypographicBounds(l, &a, &d, &lead)
+		return a + d + lead
+	}()
+	#expect((gaps.max() ?? 0) - (gaps.min() ?? 0) < baseLine * 0.5, "column pitch too uneven: \(gaps)")
+}
+
+@Test func callerParagraphStyleSurvivesPitchMerge() {
+	// A caller's alignment must survive the engine merging in the line pitch.
+	let para = NSMutableParagraphStyle()
+	para.alignment = .right
+	let attr = NSAttributedString(string: "短い行", attributes: [.paragraphStyle: para])
+	let engine = PorticoTextLayoutEngine(
+		attributedString: attr,
+		orientation: .horizontal,
+		bounds: CGSize(width: 1000, height: 200)
+	)
+	// Right-aligned, the short line's origin is pushed well to the right; if the
+	// merge had clobbered the style it would sit near x≈0.
+	let originX = engine.lineOrigins().first?.x ?? 0
+	#expect(originX > 200, "caller paragraph alignment was lost; originX=\(originX)")
+}
+#endif
 
 @Test func attributesAppliedToWholeString() {
 	let key = NSAttributedString.Key("test.key")

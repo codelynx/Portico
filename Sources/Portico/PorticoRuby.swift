@@ -11,8 +11,10 @@ import CoreText
 /// - Auto base:     `漢字《かんじ》`  — base is the preceding run of kanji.
 /// - Explicit base: `｜大人《おとな》` — base is the text after `｜`, up to `《`.
 ///
-/// See `Docs/RubySupport.md` for the full spec. v1 is parse + render only;
-/// serialization and editing semantics are deferred.
+/// Round-trips notation ↔ attributed string via `parse` and `serialize`.
+///
+/// See `Docs/RubySupport.md` for the full spec. Live-editing semantics (atomic
+/// group delete, cursor stepping) are deferred.
 public enum PorticoRuby {
 
 	private static let rubyOpen: Character = "《"   // U+300A
@@ -85,6 +87,38 @@ public enum PorticoRuby {
 		let result = NSMutableAttributedString(string: body, attributes: attributes)
 		for annotation in annotations {
 			addRuby(annotation.reading, to: annotation.range, in: result)
+		}
+		return result
+	}
+
+	/// Serializes an attributed string back to Aozora ruby notation — the inverse
+	/// of `parse`, for persistence.
+	///
+	/// Every ruby base is emitted in the **explicit `｜` form** (`｜base《reading》`),
+	/// which is unambiguous regardless of the base content, so `parse(serialize(x))`
+	/// reproduces the same base text and readings. Note: v1 has no escaping, so base
+	/// text containing literal `《`, `》`, or `｜` cannot round-trip (see spec §3.1);
+	/// `parse` never produces such bases, so its output always round-trips.
+	public static func serialize(_ attributed: NSAttributedString) -> String {
+		let rubyKey = NSAttributedString.Key(kCTRubyAnnotationAttributeName as String)
+		let full = attributed.string as NSString
+		var result = ""
+
+		attributed.enumerateAttribute(rubyKey, in: NSRange(location: 0, length: attributed.length)) { value, range, _ in
+			let substring = full.substring(with: range)
+			// Only treat genuine CTRubyAnnotation values as ruby; emit anything else
+			// (nil, or a foreign value under this key) as plain text — never trap.
+			guard let value, CFGetTypeID(value as CFTypeRef) == CTRubyAnnotationGetTypeID() else {
+				result += substring
+				return
+			}
+			let annotation = value as! CTRubyAnnotation
+			let reading = CTRubyAnnotationGetTextForPosition(annotation, .before) as String? ?? ""
+			if reading.isEmpty {
+				result += substring
+			} else {
+				result += "\(baseMark)\(substring)\(rubyOpen)\(reading)\(rubyClose)"
+			}
 		}
 		return result
 	}
