@@ -19,6 +19,10 @@ public class PorticoTextLayoutEngine {
 	public var cursorIndex: Int = 0
 	public var selectionRange: NSRange?
 	public var markedRange: NSRange?
+	/// Whether the engine draws its own caret and selection highlight. macOS keeps this
+	/// on (it owns rendering). iOS turns it off so a `UITextInteraction` renders the
+	/// native caret, selection tint, and handles instead — avoiding a doubled caret/fill.
+	public var drawsSelectionUI: Bool = true
 	private var selectionAnchorIndex: Int?
 	public var textDidChange: ((NSAttributedString) -> Void)?
 	
@@ -68,6 +72,22 @@ public class PorticoTextLayoutEngine {
 				let length = abs(anchor - index)
 				selectionRange = NSRange(location: start, length: length)
 			}
+		}
+	}
+
+	/// Sets the selection from an external source (e.g. UIKit's `selectedTextRange`),
+	/// seeding the internal anchor so a later Shift+Arrow (`moveCursor`) extends from
+	/// the right end instead of a nil/stale anchor. A zero-length range collapses to a
+	/// caret; otherwise the anchor is the range start and the cursor its end.
+	public func setSelectedRange(_ range: NSRange) {
+		if range.length == 0 {
+			cursorIndex = range.location
+			selectionRange = nil
+			selectionAnchorIndex = nil
+		} else {
+			cursorIndex = range.location + range.length
+			selectionRange = range
+			selectionAnchorIndex = range.location
 		}
 	}
 	
@@ -479,22 +499,24 @@ public class PorticoTextLayoutEngine {
 		guard let textFrame = textFrame else { return }
 		
 		context.saveGState()
-		
+
 		// Draw selection highlight first so text is drawn over it
-		drawSelection(in: context)
-		
-		// CoreText natively handles vertical layout geometry when progression is rightToLeft 
+		if drawsSelectionUI {
+			drawSelection(in: context)
+		}
+
+		// CoreText natively handles vertical layout geometry when progression is rightToLeft
 		// and kCTVerticalFormsAttributeName is applied. No context rotation needed on macOS!
-		
+
 		CTFrameDraw(textFrame, context)
-		
+
 		// Draw the caret if there is no selection
-		if selectionRange == nil && markedRange == nil {
+		if drawsSelectionUI && selectionRange == nil && markedRange == nil {
 			let rect = caretRect(for: cursorIndex)
 			context.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
 			context.fill(rect)
 		}
-		
+
 		context.restoreGState()
 	}
 }

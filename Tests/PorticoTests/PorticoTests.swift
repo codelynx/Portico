@@ -39,3 +39,27 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 	#expect(rects.count == 2)
 	#expect(rects.allSatisfy { $0.width > 0 && $0.height > 0 })
 }
+
+// MARK: - Selection anchor consistency (external selection → Shift+Arrow)
+
+@Test func externalSelectionThenShiftArrowExtends() {
+	// Simulates UIKit setting a non-empty selection (via selectedTextRange), then a
+	// Shift+Arrow. Before setSelectedRange seeded the anchor, this failed to extend.
+	let e = engine("hello world")
+	e.setSelectedRange(NSRange(location: 0, length: 5)) // "hello"
+	#expect(e.selectionRange == NSRange(location: 0, length: 5))
+	e.moveCursor(direction: .right, modifySelection: true)
+	#expect(e.selectionRange == NSRange(location: 0, length: 6)) // extended, anchor at 0
+}
+
+@Test func setSelectedRangeCollapsesZeroLengthToCaret() {
+	let e = engine("hello world")
+	e.setSelectedRange(NSRange(location: 3, length: 0))
+	#expect(e.selectionRange == nil)
+	#expect(e.cursorIndex == 3)
+}
+
+@Test func drawsSelectionUIDefaultsOn() {
+	// macOS relies on the engine drawing its own caret/selection.
+	#expect(engine("x").drawsSelectionUI == true)
+}

@@ -156,12 +156,16 @@ public class PorticoTextView: UIView, UITextInput {
 		super.init(frame: frame)
 		self.backgroundColor = .clear
 		self.contentMode = .redraw
-		
-		let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
-		addGestureRecognizer(tap)
-		
-		let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
-		addGestureRecognizer(pan)
+
+		// Let UIKit own selection UI: a UITextInteraction drives caret placement,
+		// word/loupe selection, and grab handles through our UITextInput conformance
+		// (closestPosition, selectionRects, selectedTextRange). The engine therefore
+		// stops drawing its own caret/selection to avoid a doubled caret and fill.
+		// (addInteraction retains it via the view's `interactions` array.)
+		layoutEngine.drawsSelectionUI = false
+		let interaction = UITextInteraction(for: .editable)
+		interaction.textInput = self
+		addInteraction(interaction)
 	}
 	
 	public required init?(coder: NSCoder) {
@@ -199,7 +203,11 @@ public class PorticoTextView: UIView, UITextInput {
 		default: return
 		}
 		let modifySelection = command.modifierFlags.contains(.shift)
+		// Bracket the programmatic change so UIKit re-queries caretRect/selectedTextRange
+		// and moves the native caret/selection; otherwise it stalls while the engine advances.
+		inputDelegate?.selectionWillChange(self)
 		layoutEngine.moveCursor(direction: direction, modifySelection: modifySelection)
+		inputDelegate?.selectionDidChange(self)
 		setNeedsDisplay()
 	}
 
@@ -210,30 +218,7 @@ public class PorticoTextView: UIView, UITextInput {
 			setNeedsDisplay()
 		}
 	}
-	
-	@objc private func handleTap(_ gesture: UITapGestureRecognizer) {
-		becomeFirstResponder()
-		var point = gesture.location(in: self)
-		// UIView origin is top-left, but CoreText math expects bottom-left
-		point.y = bounds.height - point.y
-		let index = layoutEngine.stringIndex(for: point)
-		layoutEngine.beginSelection(at: index)
-		setNeedsDisplay()
-	}
-	
-	@objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
-		var point = gesture.location(in: self)
-		point.y = bounds.height - point.y
-		let index = layoutEngine.stringIndex(for: point)
-		
-		if gesture.state == .began {
-			layoutEngine.beginSelection(at: index)
-		} else if gesture.state == .changed {
-			layoutEngine.updateSelection(to: index)
-			setNeedsDisplay()
-		}
-	}
-	
+
 	public override func draw(_ rect: CGRect) {
 		super.draw(rect)
 		guard let context = UIGraphicsGetCurrentContext() else { return }
@@ -279,13 +264,9 @@ public class PorticoTextView: UIView, UITextInput {
 		}
 		set {
 			if let r = (newValue as? PorticoTextRange)?.range {
-				if r.length == 0 {
-					layoutEngine.cursorIndex = r.location
-					layoutEngine.selectionRange = nil
-				} else {
-					layoutEngine.cursorIndex = r.location + r.length
-					layoutEngine.selectionRange = r
-				}
+				// Route through the engine so the selection anchor stays consistent —
+				// otherwise a Shift+Arrow after a UIKit-created selection can't extend.
+				layoutEngine.setSelectedRange(r)
 				setNeedsDisplay()
 			}
 		}
@@ -385,7 +366,17 @@ public class PorticoTextView: UIView, UITextInput {
 	}
 
 	public func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? { return closestPosition(to: point) }
-	public func characterRange(at point: CGPoint) -> UITextRange? { return nil }
+	public func characterRange(at point: CGPoint) -> UITextRange? {
+		// UIKit calls this for loupe/handle placement — return the character containing
+		// the point as a non-empty [start, start+1) range. At the document end, anchor
+		// on the last character so it isn't empty; empty document yields a caret range.
+		let length = layoutEngine.attributedString.length
+		guard length > 0 else { return PorticoTextRange(range: NSRange(location: 0, length: 0)) }
+		let ctPoint = CGPoint(x: point.x, y: bounds.height - point.y)
+		let index = layoutEngine.stringIndex(for: ctPoint)
+		let start = min(index, length - 1)
+		return PorticoTextRange(range: NSRange(location: start, length: 1))
+	}
 
 	// MARK: Comparisons
 	public func compare(_ position: UITextPosition, to other: UITextPosition) -> ComparisonResult {
@@ -418,8 +409,8 @@ public final class PorticoTextRange: UITextRange {
 }
 
 /// Per-line selection geometry handed to UIKit through `UITextInput`. Supplies the
-/// rects UIKit *would* use for selection handles / magnifier — rendering that system
-/// UI additionally requires a `UITextInteraction`, which isn't installed yet.
+/// rects the `UITextInteraction` (installed in `init`) uses to render the native
+/// selection handles / magnifier.
 /// Internal: callers only ever see the abstract `[UITextSelectionRect]`.
 final class PorticoTextSelectionRect: UITextSelectionRect {
 	private let _rect: CGRect
