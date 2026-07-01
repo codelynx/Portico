@@ -19,10 +19,17 @@ public class PorticoTextLayoutEngine {
 	public var cursorIndex: Int = 0
 	public var selectionRange: NSRange?
 	public var markedRange: NSRange?
-	/// Whether the engine draws its own caret and selection highlight. macOS keeps this
-	/// on (it owns rendering). iOS turns it off so a `UITextInteraction` renders the
-	/// native caret, selection tint, and handles instead — avoiding a doubled caret/fill.
-	public var drawsSelectionUI: Bool = true
+	/// Whether the engine draws its own selection highlight. macOS keeps this on (it owns
+	/// rendering); iOS turns it off so `UITextInteraction` renders the native selection
+	/// tint + handles, avoiding a doubled fill.
+	public var drawsSelectionHighlight: Bool = true
+
+	/// Whether the engine draws the caret itself: when it owns rendering (macOS) OR the
+	/// text is vertical — UIKit's `UITextInteraction` can't render a vertical-text caret
+	/// (it collapses our wide-short caret rect to a stub), so the engine draws it even when
+	/// iOS otherwise owns selection. Computed from the live `orientation` so a runtime
+	/// orientation change can't leave it stale.
+	public var drawsCaret: Bool { drawsSelectionHighlight || orientation == .vertical }
 	private var selectionAnchorIndex: Int?
 	public var textDidChange: ((NSAttributedString) -> Void)?
 	
@@ -344,10 +351,14 @@ public class PorticoTextLayoutEngine {
 				let offset = CTLineGetOffsetForStringIndex(line, index, nil)
 				
 				if orientation == .vertical {
+					let caretThickness: CGFloat = 2
 					let x = origin.x - descent
-					// CoreText vertical offsets move down visually, so we subtract from Y
-					let y = origin.y - offset
-					return CGRect(x: x, y: y, width: ascent + descent, height: 2)
+					// CoreText vertical offsets move down visually, so we subtract from Y.
+					// Bias the caret past the boundary in the writing direction (downward,
+					// toward the next glyph) — mirroring the horizontal caret's rightward
+					// bias — so a caret at the top of a column isn't clipped above origin.y.
+					let y = origin.y - offset - caretThickness
+					return CGRect(x: x, y: y, width: ascent + descent, height: caretThickness)
 				} else {
 					let x = origin.x + offset
 					let y = origin.y - descent
@@ -494,7 +505,7 @@ public class PorticoTextLayoutEngine {
 		context.saveGState()
 
 		// Draw selection highlight first so text is drawn over it
-		if drawsSelectionUI {
+		if drawsSelectionHighlight {
 			drawSelection(in: context)
 		}
 
@@ -503,8 +514,8 @@ public class PorticoTextLayoutEngine {
 
 		CTFrameDraw(textFrame, context)
 
-		// Draw the caret if there is no selection
-		if drawsSelectionUI && selectionRange == nil && markedRange == nil {
+		// Draw the caret when the engine owns it (see `drawsCaret`).
+		if drawsCaret && selectionRange == nil && markedRange == nil {
 			let rect = caretRect(for: cursorIndex)
 			context.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
 			context.fill(rect)

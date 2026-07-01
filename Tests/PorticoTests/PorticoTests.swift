@@ -59,7 +59,34 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 	#expect(e.cursorIndex == 3)
 }
 
-@Test func drawsSelectionUIDefaultsOn() {
-	// macOS relies on the engine drawing its own caret/selection.
-	#expect(engine("x").drawsSelectionUI == true)
+@Test func drawsSelectionHighlightDefaultsOn() {
+	// macOS relies on the engine drawing its own selection highlight.
+	#expect(engine("x").drawsSelectionHighlight == true)
+}
+
+@Test func drawsCaretOwnsVerticalEvenWhenHighlightOff() {
+	// iOS turns off the highlight (UIKit owns selection), but the engine must still own
+	// the caret in vertical (UIKit can't render one) and cede it in horizontal.
+	let v = engine("x", orientation: .vertical)
+	v.drawsSelectionHighlight = false
+	#expect(v.drawsCaret == true)
+	let h = engine("x", orientation: .horizontal)
+	h.drawsSelectionHighlight = false
+	#expect(h.drawsCaret == false)
+}
+
+@Test func verticalCaretAtLineStartStaysInBounds() {
+	// Regression: at the top of a column the caret's y equalled the bounds top, so its
+	// thickness spilled above the visible area and the caret vanished. It must stay inside.
+	let text = "吾輩は猫である。\nどこで生れたか。\nPortico engine."
+	let h: CGFloat = 400
+	let e = PorticoTextLayoutEngine(attributedString: NSAttributedString(string: text), orientation: .vertical, bounds: CGSize(width: 400, height: h))
+	let ns = text as NSString
+	var starts = [0]
+	for i in 0..<ns.length where ns.character(at: i) == 10 { starts.append(i + 1) }
+	for s in starts {
+		let r = e.caretRect(for: s)
+		#expect(r.maxY <= h, "caret at line-start idx \(s) spills above bounds: \(r)")
+		#expect(r.minY >= 0, "caret at line-start idx \(s) spills below bounds: \(r)")
+	}
 }

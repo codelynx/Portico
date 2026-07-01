@@ -160,9 +160,10 @@ public class PorticoTextView: UIView, UITextInput {
 		// Let UIKit own selection UI: a UITextInteraction drives caret placement,
 		// word/loupe selection, and grab handles through our UITextInput conformance
 		// (closestPosition, selectionRects, selectedTextRange). The engine therefore
-		// stops drawing its own caret/selection to avoid a doubled caret and fill.
+		// stops drawing its own selection fill to avoid doubling. (It still draws the
+		// caret in vertical mode, where UIKit can't render one — see draw(in:).)
 		// (addInteraction retains it via the view's `interactions` array.)
-		layoutEngine.drawsSelectionUI = false
+		layoutEngine.drawsSelectionHighlight = false
 		let interaction = UITextInteraction(for: .editable)
 		interaction.textInput = self
 		addInteraction(interaction)
@@ -219,11 +220,32 @@ public class PorticoTextView: UIView, UITextInput {
 		}
 	}
 
+	private var caretTintCleared = false
+
+	/// In vertical, the engine draws the caret (UIKit can't render a horizontal one and
+	/// would show a stub). Hide UIKit's caret by clearing the view tint while there's no
+	/// selection — leaving only the engine's caret — and restore it when a selection
+	/// exists so native handles / edit menu keep their color. `caretRect` stays honest, so
+	/// UIKit's cursor tracking (which the engine caret follows) is untouched.
+	private func updateCaretTint() {
+		let engineOwnsCaret = layoutEngine.orientation == .vertical
+			&& layoutEngine.selectionRange == nil
+			&& layoutEngine.markedRange == nil
+		if engineOwnsCaret, !caretTintCleared {
+			tintColor = .clear
+			caretTintCleared = true
+		} else if !engineOwnsCaret, caretTintCleared {
+			tintColor = nil
+			caretTintCleared = false
+		}
+	}
+
 	public override func draw(_ rect: CGRect) {
 		super.draw(rect)
 		guard let context = UIGraphicsGetCurrentContext() else { return }
 		layoutEngine.update(bounds: bounds.size)
-		
+		updateCaretTint()
+
 		context.saveGState()
 		context.translateBy(x: 0, y: bounds.height)
 		context.scaleBy(x: 1.0, y: -1.0)
@@ -341,6 +363,9 @@ public class PorticoTextView: UIView, UITextInput {
 	public func caretRect(for position: UITextPosition) -> CGRect {
 		guard let p = (position as? PorticoTextPosition)?.index else { return .zero }
 		let localRect = layoutEngine.caretRect(for: p)
+		// Honest rect always — UIKit needs it for cursor tracking (which the engine caret
+		// follows), not just drawing. In vertical, UIKit's own caret is hidden via tint
+		// (see updateCaretTint), not by degenerating this rect.
 		return CGRect(x: localRect.origin.x, y: bounds.height - localRect.maxY, width: localRect.width, height: localRect.height)
 	}
 
