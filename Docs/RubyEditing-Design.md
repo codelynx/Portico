@@ -51,7 +51,9 @@ Resolved shape (agents converged; the collapse and index-addressing were review 
   setRuby(_ reading: String?, for baseRange: NSRange)   // nil — or empty/whitespace — removes
   ```
   An **empty or whitespace reading removes** the group (matching `parse`, where an empty
-  reading attaches nothing), so `nil` and `""` behave alike.
+  reading attaches nothing), so `nil` and `""` behave alike. A **zero-length or out-of-bounds
+  `baseRange` is a no-op**, and a non-blank reading is stored **as given** (trimming only
+  decides removal; kana normalization is the client's call).
 - **Address groups by character index, not ordinal** (ordinals go stale on edit; a caret
   or tap already gives you an index):
   ```
@@ -189,9 +191,8 @@ undefined.)
   relayout, and `textDidChange`. Likely **both** — a pure core transform plus a thin engine
   wrapper — but decide consciously, not by accident during implementation.
 - Undo granularity for inline conversion and `setRuby` — one step or per-char?
-- Should `setRuby` on a **zero-length** (caret-only) range be a no-op, or place an empty
-  base marker? (Lean: no-op.)
-- Reading normalization on input (full-width/half-width kana, trimming) — framework or client?
+- Reading normalization on input (full-width/half-width kana) — framework or client? *(Trimming
+  and the zero-length-range no-op are now decided — see §5.)*
 
 ## 12. Parked ideas (future, not v1)
 

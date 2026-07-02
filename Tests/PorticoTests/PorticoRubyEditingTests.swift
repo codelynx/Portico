@@ -71,3 +71,100 @@ private func editEngine(_ notation: String) -> PorticoTextLayoutEngine {
 	#expect(e.attributedString.string == "ふつXうの文")
 	#expect(!hasRuby(e.attributedString, at: 2))
 }
+
+// MARK: - §5 editing primitives: setRuby / rubyGroup / rubyGroups
+
+private func mutable(_ notation: String) -> NSMutableAttributedString {
+	NSMutableAttributedString(attributedString: PorticoRuby.parse(notation))
+}
+
+@Test func setRubyAddsGroupToPlainText() {
+	let s = NSMutableAttributedString(string: "漢字")
+	PorticoRuby.setRuby("かんじ", for: NSRange(location: 0, length: 2), in: s)
+	let g = PorticoRuby.rubyGroup(at: 0, in: s)
+	#expect(g?.base == NSRange(location: 0, length: 2))
+	#expect(g?.reading == "かんじ")
+}
+
+@Test func setRubyRemovesWithNil() {
+	let s = mutable("漢字《かんじ》")
+	PorticoRuby.setRuby(nil, for: NSRange(location: 0, length: 2), in: s)
+	#expect(PorticoRuby.rubyGroup(at: 0, in: s) == nil)
+	#expect(s.string == "漢字") // base text kept
+}
+
+@Test func setRubyRemovesWithEmptyOrWhitespace() {
+	for empty in ["", "   ", "\n"] {
+		let s = mutable("漢字《かんじ》")
+		PorticoRuby.setRuby(empty, for: NSRange(location: 0, length: 2), in: s)
+		#expect(PorticoRuby.rubyGroup(at: 0, in: s) == nil, "‘\(empty)’ should remove")
+	}
+}
+
+@Test func setRubyReplacesIntersectingGroups() {
+	// Range straddling two groups → both cleared (full ranges), one new group, no fragments.
+	let s = mutable("東京《とうきょう》大学《だいがく》") // 東京[0,2) 大学[2,4)
+	PorticoRuby.setRuby("よみ", for: NSRange(location: 1, length: 2), in: s) // covers 京大
+	#expect(s.string == "東京大学")
+	#expect(PorticoRuby.rubyGroup(at: 0, in: s) == nil)              // 東 — old ruby cleared
+	#expect(PorticoRuby.rubyGroup(at: 1, in: s)?.reading == "よみ")
+	#expect(PorticoRuby.rubyGroup(at: 2, in: s)?.reading == "よみ")
+	#expect(PorticoRuby.rubyGroup(at: 3, in: s) == nil)              // 学 — old ruby cleared
+	#expect(PorticoRuby.rubyGroups(in: NSRange(location: 0, length: 4), of: s).count == 1)
+}
+
+@Test func rubyGroupAtIndexBoundaries() {
+	let s = mutable("a漢字《かんじ》") // "a漢字", ruby [1,3)
+	#expect(s.string == "a漢字")
+	#expect(PorticoRuby.rubyGroup(at: 0, in: s) == nil)             // 'a' plain
+	#expect(PorticoRuby.rubyGroup(at: 1, in: s)?.base == NSRange(location: 1, length: 2))
+	#expect(PorticoRuby.rubyGroup(at: 2, in: s)?.reading == "かんじ")
+	#expect(PorticoRuby.rubyGroup(at: 3, in: s) == nil)             // end/out of bounds
+}
+
+@Test func rubyGroupsInRangeReturnsFullRanges() {
+	let s = mutable("東京《とうきょう》大学《だいがく》")
+	let all = PorticoRuby.rubyGroups(in: NSRange(location: 0, length: s.length), of: s)
+	#expect(all.count == 2)
+	#expect(all[0].base == NSRange(location: 0, length: 2) && all[0].reading == "とうきょう")
+	#expect(all[1].base == NSRange(location: 2, length: 2) && all[1].reading == "だいがく")
+	// A query touching only part of the first group still returns it whole.
+	let partial = PorticoRuby.rubyGroups(in: NSRange(location: 0, length: 1), of: s)
+	#expect(partial.count == 1 && partial[0].base == NSRange(location: 0, length: 2))
+}
+
+@Test func setRubyZeroLengthIsNoOp() {
+	let s = mutable("漢字《かんじ》")
+	PorticoRuby.setRuby("x", for: NSRange(location: 1, length: 0), in: s)
+	#expect(PorticoRuby.rubyGroup(at: 0, in: s)?.reading == "かんじ") // unchanged
+}
+
+@Test func rubyGroupReturnsFullRangeAcrossStyleRuns() {
+	// A secondary attribute over only part of the base splits the attribute runs; the group
+	// query must still report the FULL base range (longestEffectiveRange), not a sub-run.
+	let s = mutable("漢字《かんじ》") // ruby over [0,2)
+	s.addAttribute(NSAttributedString.Key("test.bold"), value: true, range: NSRange(location: 0, length: 1))
+	let g = PorticoRuby.rubyGroup(at: 1, in: s)
+	#expect(g?.base == NSRange(location: 0, length: 2))
+	#expect(g?.reading == "かんじ")
+}
+
+@Test func setRubyStoresReadingAsGiven() {
+	// Trimming decides only removal; a non-blank reading is stored verbatim (normalization
+	// is the client's call, per design §11).
+	let s = NSMutableAttributedString(string: "漢字")
+	PorticoRuby.setRuby(" か ん ", for: NSRange(location: 0, length: 2), in: s)
+	#expect(PorticoRuby.rubyGroup(at: 0, in: s)?.reading == " か ん ")
+}
+
+@Test func setRubyRoundTrips() {
+	// Acceptance criterion (§9): a setRuby-built state serializes and reparses identically.
+	let s = NSMutableAttributedString(string: "東京は大学だ")
+	PorticoRuby.setRuby("とうきょう", for: NSRange(location: 0, length: 2), in: s)
+	PorticoRuby.setRuby("だいがく", for: NSRange(location: 3, length: 2), in: s)
+	let reparsed = PorticoRuby.parse(PorticoRuby.serialize(s))
+	#expect(reparsed.string == s.string)
+	let a = PorticoRuby.rubyGroups(in: NSRange(location: 0, length: s.length), of: s)
+	let b = PorticoRuby.rubyGroups(in: NSRange(location: 0, length: reparsed.length), of: reparsed)
+	#expect(a.map { "\($0.base)=\($0.reading)" } == b.map { "\($0.base)=\($0.reading)" })
+}

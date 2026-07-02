@@ -13,13 +13,16 @@ import CoreText
 ///
 /// Round-trips notation ↔ attributed string via `parse` and `serialize`.
 ///
-/// See `Docs/RubySupport.md` for the full spec. Live-editing semantics (atomic
-/// group delete, cursor stepping) are deferred.
+/// Editing primitives — `setRuby`, `rubyGroup(at:)`, `rubyGroups(in:)` — apply, edit,
+/// remove, and query ruby on an attributed string (see `Docs/RubyEditing-Design.md`).
+///
+/// See `Docs/RubySupport.md` for the full spec.
 public enum PorticoRuby {
 
 	private static let rubyOpen: Character = "《"   // U+300A
 	private static let rubyClose: Character = "》"  // U+300B
 	private static let baseMark: Character = "｜"   // U+FF5C
+	private static let rubyKey = NSAttributedString.Key(kCTRubyAnnotationAttributeName as String)
 
 	/// Parses Aozora ruby notation into an attributed string.
 	///
@@ -100,7 +103,6 @@ public enum PorticoRuby {
 	/// text containing literal `《`, `》`, or `｜` cannot round-trip (see spec §3.1);
 	/// `parse` never produces such bases, so its output always round-trips.
 	public static func serialize(_ attributed: NSAttributedString) -> String {
-		let rubyKey = NSAttributedString.Key(kCTRubyAnnotationAttributeName as String)
 		let full = attributed.string as NSString
 		var result = ""
 
@@ -121,6 +123,75 @@ public enum PorticoRuby {
 			}
 		}
 		return result
+	}
+
+	// MARK: - Editing primitives (Phase 3)
+
+	/// The ruby group covering `index`, or nil. Per the design contract, `index` must be
+	/// **strictly inside** a base (querying at the end boundary returns the following
+	/// group, or nil). Returns the group's **full** base range and reading — coalescing
+	/// across secondary-attribute run splits (e.g. styling on part of the base) via
+	/// `longestEffectiveRange`, so a styled base still reports one whole group.
+	public static func rubyGroup(at index: Int, in attributed: NSAttributedString) -> (base: NSRange, reading: String)? {
+		guard index >= 0, index < attributed.length else { return nil }
+		var range = NSRange(location: 0, length: 0)
+		let full = NSRange(location: 0, length: attributed.length)
+		let value = attributed.attribute(rubyKey, at: index, longestEffectiveRange: &range, in: full)
+		guard let text = reading(from: value) else { return nil }
+		return (range, text)
+	}
+
+	/// Ruby groups whose base **intersects** `range`, in document order, as **full**
+	/// (unclipped) base ranges — a group is atomic, so a partial overlap still returns it whole.
+	public static func rubyGroups(in range: NSRange, of attributed: NSAttributedString) -> [(base: NSRange, reading: String)] {
+		allRubyGroups(in: attributed).filter { NSIntersectionRange($0.base, range).length > 0 }
+	}
+
+	/// Sets — or, with a nil / empty / whitespace reading, removes — the ruby over `baseRange`.
+	///
+	/// Overlap rule (design §5): the **full** ranges of all groups intersecting `baseRange`
+	/// are cleared first, then the new reading is applied to `baseRange` — no leftover split
+	/// fragments. A zero-length `baseRange` (or one out of bounds) is a no-op. A non-blank
+	/// reading is stored **as given** (trimming only decides removal; kana normalization is
+	/// the client's call).
+	///
+	/// Note: readings or base text containing literal Aozora markup (`《`, `》`, `｜`) are
+	/// stored fine but are outside the serialize/parse round-trip guarantee until escaping
+	/// exists (design §9); no validation is performed.
+	public static func setRuby(_ reading: String?, for baseRange: NSRange, in attributed: NSMutableAttributedString) {
+		guard baseRange.length > 0,
+			  baseRange.location >= 0,
+			  baseRange.location + baseRange.length <= attributed.length else { return }
+
+		// Clear baseRange plus the full range of every intersecting group (no fragments left).
+		var clearRange = baseRange
+		for group in rubyGroups(in: baseRange, of: attributed) {
+			clearRange = NSUnionRange(clearRange, group.base)
+		}
+		attributed.removeAttribute(rubyKey, range: clearRange)
+
+		// Apply the reading as-given, unless it's blank (nil/empty/whitespace → remove only).
+		if let reading, !reading.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+			addRuby(reading, to: baseRange, in: attributed)
+		}
+	}
+
+	/// All ruby groups in document order (full base ranges + readings).
+	private static func allRubyGroups(in attributed: NSAttributedString) -> [(base: NSRange, reading: String)] {
+		var groups: [(NSRange, String)] = []
+		attributed.enumerateAttribute(rubyKey, in: NSRange(location: 0, length: attributed.length)) { value, range, _ in
+			if let text = reading(from: value) { groups.append((range, text)) }
+		}
+		return groups
+	}
+
+	/// The reading from a genuine `CTRubyAnnotation` value, or nil (never traps on a foreign
+	/// value under the ruby key, and treats an empty reading as "no group").
+	private static func reading(from value: Any?) -> String? {
+		guard let value, CFGetTypeID(value as CFTypeRef) == CTRubyAnnotationGetTypeID() else { return nil }
+		let annotation = value as! CTRubyAnnotation
+		let text = CTRubyAnnotationGetTextForPosition(annotation, .before) as String? ?? ""
+		return text.isEmpty ? nil : text
 	}
 
 	// MARK: - Internals
@@ -146,8 +217,7 @@ public enum PorticoRuby {
 		let annotation = CTRubyAnnotationCreateWithAttributes(
 			.center, .auto, .before, reading as CFString, [:] as CFDictionary
 		)
-		let key = NSAttributedString.Key(kCTRubyAnnotationAttributeName as String)
-		string.addAttribute(key, value: annotation, range: range)
+		string.addAttribute(rubyKey, value: annotation, range: range)
 	}
 
 	private static func isKanji(_ ch: Character) -> Bool {
