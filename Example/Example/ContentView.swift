@@ -40,19 +40,25 @@ struct ContentView: View {
 				.border(Color.gray)
 				.overlay(alignment: .topLeading) {
 					// Selecting an existing ruby group floats the editor next to it (anchorRect).
-					// x is clamped to keep the editor on-screen (matters in vertical, where columns
-					// are right-aligned). Deferred to a polished tier: vertical flip-above + arrow
-					// placement — a real client should use a .popover (native edge-avoidance).
+					// Both axes are clamped to keep the editor on-screen: x matters in vertical
+					// (columns are right-aligned), y matters when the group sits near the bottom —
+					// the editor prefers to sit below the group but flips above if below would clip
+					// the bottom edge. (A real client should use a .popover for native edge-avoidance;
+					// this is the demo's own placement.)
 					if let anchor = groupAnchor {
 						GeometryReader { geo in
 							let editorWidth: CGFloat = 240
+							let editorHeight: CGFloat = 56 // estimate: padded TextField + button row
+							let belowY = anchor.maxY + 4
+							let aboveY = anchor.minY - editorHeight - 4
+							let preferredY = (belowY + editorHeight <= geo.size.height) ? belowY : aboveY
 							rubyEditor
 								.padding(8)
-								.frame(width: editorWidth)
+								.frame(width: editorWidth, height: editorHeight)
 								.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
 								.overlay(RoundedRectangle(cornerRadius: 8).stroke(.secondary))
 								.offset(x: max(0, min(anchor.minX, geo.size.width - editorWidth)),
-										y: anchor.maxY + 4)
+										y: max(0, min(preferredY, geo.size.height - editorHeight)))
 						}
 					}
 				}
