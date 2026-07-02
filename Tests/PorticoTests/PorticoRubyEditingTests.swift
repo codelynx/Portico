@@ -351,3 +351,74 @@ private func mutable(_ notation: String) -> NSMutableAttributedString {
 	let r = rects[0]
 	#expect(e.rubyGroup(at: CGPoint(x: r.midX, y: r.midY))?.base == NSRange(location: 0, length: 2))
 }
+
+// MARK: - Step 5: inline notation conversion (§7a)
+
+private func emptyEngine() -> PorticoTextLayoutEngine {
+	PorticoTextLayoutEngine(attributedString: NSAttributedString(string: ""), orientation: .horizontal, bounds: CGSize(width: 400, height: 400))
+}
+private func type(_ s: String, into e: PorticoTextLayoutEngine) { for ch in s { e.insertText(String(ch)) } }
+
+@Test func inlineMatchDetectsAutoBase() {
+	let m = PorticoRuby.inlineRubyMatch(in: "は猫《ねこ》" as NSString, closingAt: 5)
+	#expect(m?.reading == "ねこ")
+	#expect(m?.baseRange == NSRange(location: 1, length: 1))  // 猫 only (は is not kanji)
+	#expect(m?.sourceRange == NSRange(location: 1, length: 5)) // 猫《ねこ》
+}
+
+@Test func inlineMatchDetectsExplicitBase() {
+	let m = PorticoRuby.inlineRubyMatch(in: "｜大人《おとな》" as NSString, closingAt: 7)
+	#expect(m?.reading == "おとな")
+	#expect(m?.baseRange == NSRange(location: 1, length: 2))  // 大人
+	#expect(m?.sourceRange == NSRange(location: 0, length: 8)) // incl. ｜
+}
+
+@Test func inlineMatchNilForNoBaseOrUnmatched() {
+	#expect(PorticoRuby.inlineRubyMatch(in: "《ねこ》" as NSString, closingAt: 3) == nil) // no base
+	#expect(PorticoRuby.inlineRubyMatch(in: "猫》" as NSString, closingAt: 1) == nil)     // unmatched
+	#expect(PorticoRuby.inlineRubyMatch(in: "猫《》" as NSString, closingAt: 2) == nil)   // empty reading
+}
+
+@Test func typingClosingBracketConvertsAutoBase() {
+	let e = emptyEngine()
+	type("猫《ねこ", into: e) // no conversion mid-run
+	#expect(e.attributedString.string == "猫《ねこ")
+	e.insertText("》") // closes → convert
+	#expect(e.attributedString.string == "猫")
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "ねこ")
+	#expect(e.cursorIndex == 1) // caret after the base
+}
+
+@Test func typingClosingBracketConvertsExplicitBase() {
+	let e = emptyEngine()
+	type("｜大人《おとな》", into: e)
+	#expect(e.attributedString.string == "大人")
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "おとな")
+}
+
+@Test func typingClosingBracketWithoutBaseLeavesLiteral() {
+	let e = emptyEngine()
+	type("《ねこ》", into: e)
+	#expect(e.attributedString.string == "《ねこ》") // no base → left literal
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString) == nil)
+}
+
+@Test func markedTextDoesNotTriggerConversion() {
+	// The "never inside IME marked text" contract: composing 《ねこ》 must NOT convert.
+	let e = editEngine("猫")
+	e.cursorIndex = 1
+	e.setMarkedText("《ねこ》", selectedRange: NSRange(location: 3, length: 0), replacementRange: nil)
+	#expect(e.attributedString.string == "猫《ねこ》") // still literal marked text
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString) == nil)
+}
+
+@Test func inlineConversionPreservesBaseAttributes() {
+	let key = NSAttributedString.Key("test.k")
+	let initial = NSMutableAttributedString(string: "猫", attributes: [key: 7])
+	let e = PorticoTextLayoutEngine(attributedString: initial, orientation: .horizontal, bounds: CGSize(width: 400, height: 400))
+	e.cursorIndex = 1
+	type("《ねこ》", into: e)
+	#expect(e.attributedString.string == "猫")
+	#expect(e.attributedString.attribute(key, at: 0, effectiveRange: nil) as? Int == 7) // base attr survived
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "ねこ")
+}

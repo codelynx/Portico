@@ -194,6 +194,74 @@ public enum PorticoRuby {
 		return text.isEmpty ? nil : text
 	}
 
+	// MARK: - Inline notation conversion (Phase 3, step 5)
+
+	private static let rubyOpenUnit: unichar = ("《" as NSString).character(at: 0)
+	private static let rubyCloseUnit: unichar = ("》" as NSString).character(at: 0)
+	private static let baseMarkUnit: unichar = ("｜" as NSString).character(at: 0)
+	private static let newlineUnit: unichar = 0x000A
+
+	/// A complete inline ruby run `[｜]base《reading》`, detected at a just-typed `》`.
+	public struct InlineRubyMatch: Equatable {
+		/// Full range of the run in the source (incl. `｜`, `《`, `》`) — the span to replace.
+		public let sourceRange: NSRange
+		/// Range of the base text within the source (marks excluded).
+		public let baseRange: NSRange
+		/// The reading between `《` and `》`.
+		public let reading: String
+	}
+
+	/// Detects a complete inline ruby run whose closing `》` is at `closeIndex`: the matching
+	/// `《`, the reading, and the base — explicit `｜base`, else a trailing run of kanji before
+	/// `《` (same rules as `parse`). Returns nil if there's no matching `《` on the line, or the
+	/// reading or base is empty — the caller then leaves the typed text literal.
+	public static func inlineRubyMatch(in string: NSString, closingAt closeIndex: Int) -> InlineRubyMatch? {
+		guard closeIndex >= 0, closeIndex < string.length,
+			  string.character(at: closeIndex) == rubyCloseUnit else { return nil }
+
+		// Matching 《, scanning back on the same line; a 》 first means it's unmatched.
+		var openIndex = -1
+		var i = closeIndex - 1
+		while i >= 0 {
+			let c = string.character(at: i)
+			if c == rubyOpenUnit { openIndex = i; break }
+			if c == rubyCloseUnit || c == newlineUnit { return nil }
+			i -= 1
+		}
+		guard openIndex >= 0, closeIndex - openIndex - 1 > 0 else { return nil }
+		let reading = string.substring(with: NSRange(location: openIndex + 1, length: closeIndex - openIndex - 1))
+
+		// Base: nearest explicit ｜ before 《 (not crossing a bracket/newline), else trailing kanji.
+		var markIndex: Int?
+		var e = openIndex - 1
+		while e >= 0 {
+			let c = string.character(at: e)
+			if c == baseMarkUnit { markIndex = e; break }
+			if c == rubyOpenUnit || c == rubyCloseUnit || c == newlineUnit { break }
+			e -= 1
+		}
+
+		let baseStart: Int
+		if let m = markIndex {
+			baseStart = m + 1
+		} else {
+			var s = openIndex
+			while s - 1 >= 0, isKanjiUnit(string.character(at: s - 1)) { s -= 1 }
+			baseStart = s
+		}
+		guard baseStart < openIndex else { return nil } // empty base → leave literal
+
+		let baseRange = NSRange(location: baseStart, length: openIndex - baseStart)
+		let sourceStart = markIndex ?? baseStart
+		let sourceRange = NSRange(location: sourceStart, length: closeIndex + 1 - sourceStart)
+		return InlineRubyMatch(sourceRange: sourceRange, baseRange: baseRange, reading: reading)
+	}
+
+	private static func isKanjiUnit(_ unit: unichar) -> Bool {
+		guard let scalar = UnicodeScalar(unit) else { return false } // surrogate half → not a standalone kanji
+		return (0x4E00...0x9FFF).contains(scalar.value) || scalar.value == 0x3005
+	}
+
 	// MARK: - Internals
 
 	/// Start offset (UTF-16) of the trailing run of kanji in `body`, not scanning

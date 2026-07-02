@@ -240,13 +240,31 @@ public class PorticoTextLayoutEngine {
 
 		let insertedString = NSAttributedString(string: text, attributes: cleanAttrs)
 		mutableString.replaceCharacters(in: targetRange, with: insertedString)
-		self.cursorIndex = targetRange.location + text.utf16.count
+		var newCursor = targetRange.location + text.utf16.count
+		// Inline notation: a just-committed `》` closing `…《reading》` converts to a ruby group
+		// (§7a). Only here (committed text) — never in setMarkedText (IME composition).
+		newCursor = convertInlineRuby(in: mutableString, cursor: newCursor)
+		self.cursorIndex = newCursor
 		self.selectionRange = nil
 		self.markedRange = nil
 
 		self.attributedString = mutableString
 		textDidChange?(self.attributedString)
 		updateLayout()
+	}
+
+	/// Converts a just-closed inline ruby run `[｜]base《reading》` into a ruby group (§7a),
+	/// preserving the base text's existing attributes. Mutates `string`; returns the updated
+	/// cursor (end of the base) or `cursor` unchanged when there's nothing to convert.
+	private func convertInlineRuby(in string: NSMutableAttributedString, cursor: Int) -> Int {
+		guard cursor > 0,
+			  let match = PorticoRuby.inlineRubyMatch(in: string.string as NSString, closingAt: cursor - 1)
+		else { return cursor }
+		// Keep the base with its attributes, drop the marks + reading, then attach the ruby.
+		let base = NSMutableAttributedString(attributedString: string.attributedSubstring(from: match.baseRange))
+		PorticoRuby.setRuby(match.reading, for: NSRange(location: 0, length: base.length), in: base)
+		string.replaceCharacters(in: match.sourceRange, with: base)
+		return match.sourceRange.location + base.length
 	}
 	
 	public func deleteBackward() {
