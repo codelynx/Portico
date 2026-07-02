@@ -2,7 +2,7 @@
 
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
-## [Unreleased]
+## [0.2.1]
 ### Fixed
 - iOS: after Cut / Delete / Paste (and backspace or typing over a selection), the native
   selection grab-handles lingered over the deleted span — the text updated but the selection UI
