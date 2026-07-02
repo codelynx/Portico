@@ -37,12 +37,15 @@ struct ExampleApp: App {
 		}
 		.commands {
 			CommandGroup(replacing: .undoRedo) {
+				// Disable while composing too, not just the action guard — else the menu item reads
+				// enabled but no-ops mid-IME. (The menu re-evaluates .disabled on open, so it reflects
+				// current markedRange even though the engine isn't Observable.)
 				Button("Undo") { undo() }
 					.keyboardShortcut("z", modifiers: .command)
-					.disabled(engine == nil)
+					.disabled(engine == nil || engine?.markedRange != nil)
 				Button("Redo") { redo() }
 					.keyboardShortcut("z", modifiers: [.command, .shift])
-					.disabled(engine == nil)
+					.disabled(engine == nil || engine?.markedRange != nil)
 			}
 			#if os(macOS)
 			// Discoverable macOS entry point (⇧⌘R) beside the right-click item — sends the action up

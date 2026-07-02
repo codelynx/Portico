@@ -35,7 +35,7 @@ From the **user's** side:
 - In-place **ruby editing** — select text, invoke a menu action, set/edit/remove the reading.
 - **Undo / redo** across every edit — typing, delete, paste, cut, ruby, inline conversion.
   **Model-scoped** when you own the engine: history survives view teardown. Portico vends the
-  engine's `UndoManager` up the AppKit responder chain (so it works from a custom `NSView`/`UIView`
+  engine's `UndoManager` up the AppKit/UIKit responder chain (so it works from a custom `NSView`/`UIView`
   and your own Undo buttons); a **SwiftUI** app should also replace the default Edit ▸ Undo/Redo
   commands to drive the engine — SwiftUI's own Undo binds to a different manager (the
   [Example](Example/Example/ExampleApp.swift) shows the `FocusedValue` + `CommandGroup` wiring).
@@ -223,6 +223,92 @@ let anchor = engine.anchorRectForSelection()         // first-segment popover an
 ```
 
 Observe changes with `engine.textDidChange` / `engine.selectionDidChange`.
+
+## Undo & redo — integration tips
+
+Undo is the part most likely to surprise you when embedding a custom text engine, so these are the
+lessons worth stealing. They're framework-neutral: they apply to any app that hosts Portico, and the
+same shapes recur any time you drive undo from a model object rather than a stock text field. The
+[Example](Example/Example/) encodes all of them.
+
+**1. Own the engine for undo that outlives the view.** `PorticoView(text:)` creates the engine
+internally, so its history dies when SwiftUI tears the view down (navigation, tab switch, cell
+reuse). For document-scoped undo, hold a `PorticoTextLayoutEngine` yourself and pass it in — the
+undo stack lives on the engine, so it survives as long as you retain it:
+
+```swift
+@State private var engine = PorticoTextLayoutEngine(attributedString: PorticoRuby.parse(text))
+PorticoView(engine: engine, orientation: orientation, onSelectionMenuAction: …)
+```
+
+(In a real app hold the engine in a view model / ancestor that shares the document's lifetime, not a
+leaf `@State` whose view identity may be torn down — a structural identity change, navigation pop,
+`.id(…)` change, or cell reuse discards `@State` and with it the stack.) To make Portico's edits
+part of a document app's *own* undo instead of a private stack, hand the engine your document's
+manager: `PorticoTextLayoutEngine(attributedString:…, undoManager: document.undoManager)`.
+
+**2. Edit through engine commands, not by replacing the document.** Undoable edits go through the
+engine — typing/delete via the view, ruby via `engine.setRuby(reading, for: range)`. Replacing the
+whole string (`engine.update(attributedString:)`) is treated as a **document reset** and *clears*
+Portico's undo history for that engine — deliberately, since loading a new document shouldn't be
+undoable. (The clear is target-scoped, so an injected document manager keeps its other actions; and
+re-assigning identical content is a no-op that leaves the stack intact.) So apply ruby with
+`setRuby`, never by rebuilding and re-assigning the attributed string.
+
+**3. In SwiftUI, wire ⌘Z / Edit ▸ Undo yourself.** Portico vends the engine's `UndoManager` up the
+**AppKit/UIKit responder chain**, so a plain `NSView`/`UIView` host gets undo for free. (Your own
+Undo buttons work because they call `engine.undoManager` directly, not through the chain.) But
+SwiftUI's *default* Edit ▸ Undo / ⌘Z bind to `@Environment(\.undoManager)`, a different manager your
+edits never touch, so they silently do nothing. Replace those commands and bridge the focused engine
+up to them:
+
+```swift
+// App — replace the stock Undo/Redo with commands that drive the engine:
+@FocusedValue(\.porticoEngine) private var engine: PorticoTextLayoutEngine?
+
+.commands {
+    CommandGroup(replacing: .undoRedo) {
+        Button("Undo") { if let e = engine, e.markedRange == nil { e.undoManager.undo() } }
+            .keyboardShortcut("z", modifiers: .command)
+            .disabled(engine == nil || engine?.markedRange != nil)   // disabled while composing, too
+        Button("Redo") { if let e = engine, e.markedRange == nil { e.undoManager.redo() } }
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .disabled(engine == nil || engine?.markedRange != nil)
+    }
+}
+// View — publish the engine to the command via a FocusedValues key you define (see the Example):
+.focusedSceneValue(\.porticoEngine, engine)
+```
+
+**4. Reflect `canUndo`/`canRedo` off the *settled* notifications.** The engine isn't `Observable`
+(by design — it mutates high-frequency state per keystroke), so drive your Undo/Redo buttons'
+enabled state from the `UndoManager`'s notifications. Use the ones that fire **after** the stack
+settles — `NSUndoManagerDidCloseUndoGroup` / `DidUndoChange` / `DidRedoChange`. A naïve
+`NSUndoManagerCheckpoint` fires at group-close *before* the step lands, so `canUndo` reads a step
+stale — the classic "Undo greyed out right after an edit":
+
+```swift
+// requires `import Combine`
+.onReceive(Publishers.MergeMany([
+    .NSUndoManagerDidCloseUndoGroup, .NSUndoManagerDidUndoChange, .NSUndoManagerDidRedoChange
+].map { NotificationCenter.default.publisher(for: $0, object: engine.undoManager) })) { _ in
+    canUndo = engine.undoManager.canUndo
+    canRedo = engine.undoManager.canRedo
+}
+```
+
+A document reset (`update(attributedString:)`) empties the stack *without* posting these
+notifications, so refresh the same `canUndo`/`canRedo` from that code path too, or the buttons stay
+stale-enabled.
+
+**5. Don't undo during IME composition.** Portico blocks its own entry points (Edit menu, ⌘Z,
+shake) while marked text is active by vending `nil` from the view's `undoManager` — undoing
+mid-composition would desync the IME. If you add your *own* undo controls, guard them the same way:
+`guard engine.markedRange == nil`.
+
+**6. The engine runs on the main actor.** `PorticoTextLayoutEngine` is `@MainActor` (Foundation's
+`UndoManager` is), so touch it — and the manager — from the main actor only. Standard for UI state;
+noted because the engine is otherwise headless and might read as thread-agnostic.
 
 ## Platform behavior
 
