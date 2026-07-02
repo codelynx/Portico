@@ -201,38 +201,48 @@ public class PorticoTextLayoutEngine {
 	}
 	
 	private func targetIndex(for direction: MoveDirection) -> Int {
+		return index(from: cursorIndex, moving: direction)
+	}
+
+	/// The string index reached by moving one step in `direction` from `from`, interpreted per
+	/// orientation — horizontal: L/R = character, U/D = line (via the caret rect ± its height);
+	/// vertical (RTL columns): L = next column, R = previous column, U/D = character. **Pure**: it
+	/// reads no `cursorIndex` and mutates nothing, so it backs both `moveCursor` (caret) and the
+	/// iOS `UITextInput` navigation queries (`position(from:in:)`, `characterRange(byExtending:)`)
+	/// from an arbitrary starting position.
+	func index(from: Int, moving direction: MoveDirection) -> Int {
 		switch direction {
 		case .left:
 			if orientation == .horizontal {
-				return max(0, cursorIndex - 1)
+				return max(0, from - 1)
 			} else {
-				let rect = caretRect(for: cursorIndex)
+				let rect = caretRect(for: from)
 				let point = CGPoint(x: rect.midX - rect.width, y: rect.midY)
 				return stringIndex(for: point)
 			}
 		case .right:
 			if orientation == .horizontal {
-				return min(attributedString.length, cursorIndex + 1)
+				return min(attributedString.length, from + 1)
 			} else {
-				let rect = caretRect(for: cursorIndex)
+				let rect = caretRect(for: from)
 				let point = CGPoint(x: rect.midX + rect.width, y: rect.midY)
 				return stringIndex(for: point)
 			}
 		case .up:
 			if orientation == .horizontal {
-				let rect = caretRect(for: cursorIndex)
+				let rect = caretRect(for: from)
 				let point = CGPoint(x: rect.midX, y: rect.midY + rect.height)
 				return stringIndex(for: point)
 			} else {
-				return max(0, cursorIndex - 1)
+				return max(0, from - 1)
 			}
 		case .down:
 			if orientation == .horizontal {
-				let rect = caretRect(for: cursorIndex)
+				let rect = caretRect(for: from)
 				let point = CGPoint(x: rect.midX, y: rect.midY - rect.height)
 				return stringIndex(for: point)
 			} else {
-				return min(attributedString.length, cursorIndex + 1)
+				return min(attributedString.length, from + 1)
 			}
 		}
 	}

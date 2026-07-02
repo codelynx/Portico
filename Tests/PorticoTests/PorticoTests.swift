@@ -158,6 +158,30 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 	#expect(e.cursorIndex == 3)
 }
 
+// MARK: - index(from:moving:) — orientation-aware caret movement (backs iOS UITextInput nav)
+
+@Test func indexUpDownMoveByLineInHorizontalText() {
+	let e = engine("abc\ndef") // line0 [0,4) "abc\n", line1 [4,7) "def"
+	#expect(e.index(from: 1, moving: .down) >= 4) // b (line0) → line1, not just +1 char
+	#expect(e.index(from: 5, moving: .up) <= 3)   // e (line1) → line0
+	#expect(e.index(from: 5, moving: .left) == 4) // left/right stay character moves
+	#expect(e.index(from: 5, moving: .right) == 6)
+}
+
+@Test func indexLeftRightMoveByColumnInVerticalText() {
+	let e = engine("abc\ndef", orientation: .vertical) // col0 [0,4), col1 [4,7); RTL columns
+	#expect(e.index(from: 1, moving: .left) >= 4)  // col0 → col1 (next line, visually left in RTL)
+	#expect(e.index(from: 5, moving: .right) <= 3) // col1 → col0 (previous line)
+	#expect(e.index(from: 5, moving: .up) == 4)    // up/down stay character moves within the column
+	#expect(e.index(from: 5, moving: .down) == 6)
+}
+
+@Test func indexClampsAtDocumentBounds() {
+	let e = engine("abc")
+	#expect(e.index(from: 0, moving: .left) == 0)  // at start, no move
+	#expect(e.index(from: 3, moving: .right) == 3) // at end, no move
+}
+
 // MARK: - anchorRectForSelection (popover anchor, §7.2 first-segment policy)
 
 @Test func anchorRectForSelectionNilWithoutSelection() {

@@ -431,16 +431,55 @@ public class PorticoTextView: UIView, UITextInput {
 		return PorticoTextPosition(index: newPos)
 	}
 
+	// Layout-direction navigation: UITextInteraction drives hardware arrows (and shifted-arrow
+	// selection) through these, not through our keyCommands. Route them to the engine's
+	// orientation-aware movement so `.up`/`.down` step by line (horizontal) and `.left`/`.right`
+	// step by column (vertical RTL) — a naïve character offset would make up≡left, down≡right.
 	public func position(from position: UITextPosition, in direction: UITextLayoutDirection, offset: Int) -> UITextPosition? {
 		guard let p = (position as? PorticoTextPosition)?.index else { return nil }
-		let sign = (direction == .left || direction == .up) ? -1 : 1
-		let newPos = p + (sign * offset)
-		if newPos < 0 || newPos > layoutEngine.attributedString.length { return nil }
-		return PorticoTextPosition(index: newPos)
+		// UIKit may query from a position left stale by an edit — clamp into bounds.
+		let start = max(0, min(p, layoutEngine.attributedString.length))
+		if offset == 0 { return PorticoTextPosition(index: start) }
+		// A negative offset moves the opposite way; normalize to a positive step count.
+		let dir = offset < 0 ? Self.opposite(direction) : direction
+		var idx = start
+		// Step one engine move at a time — line/column moves are NOT linear UTF-16 offsets, so
+		// this can't be `start + offset`; each step recomputes from the new caret position.
+		for _ in 0..<abs(offset) {
+			idx = layoutEngine.index(from: idx, moving: Self.moveDirection(for: dir))
+		}
+		return PorticoTextPosition(index: idx)
 	}
 
 	public func position(within range: UITextRange, farthestIn direction: UITextLayoutDirection) -> UITextPosition? { return nil }
-	public func characterRange(byExtending position: UITextPosition, in direction: UITextLayoutDirection) -> UITextRange? { return nil }
+
+	public func characterRange(byExtending position: UITextPosition, in direction: UITextLayoutDirection) -> UITextRange? {
+		guard let p = (position as? PorticoTextPosition)?.index else { return nil }
+		let start = max(0, min(p, layoutEngine.attributedString.length))
+		let moved = layoutEngine.index(from: start, moving: Self.moveDirection(for: direction))
+		let lo = min(start, moved), hi = max(start, moved)
+		return PorticoTextRange(range: NSRange(location: lo, length: hi - lo))
+	}
+
+	private static func moveDirection(for d: UITextLayoutDirection) -> PorticoTextLayoutEngine.MoveDirection {
+		switch d {
+		case .left: return .left
+		case .right: return .right
+		case .up: return .up
+		case .down: return .down
+		@unknown default: return .right
+		}
+	}
+
+	private static func opposite(_ d: UITextLayoutDirection) -> UITextLayoutDirection {
+		switch d {
+		case .left: return .right
+		case .right: return .left
+		case .up: return .down
+		case .down: return .up
+		@unknown default: return d
+		}
+	}
 
 	public var inputDelegate: UITextInputDelegate?
 
