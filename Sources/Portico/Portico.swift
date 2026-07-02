@@ -103,7 +103,13 @@ public struct PorticoView: UIViewRepresentable {
 			layoutChanged = true
 		}
 		if uiView.layoutEngine.orientation != orientation {
+			// Orientation flips the whole layout, so the selection's geometry changes even
+			// though its range doesn't. Bracket with the selection notifications (not the text
+			// pair — this isn't a text change) so UITextInteraction re-queries handle geometry
+			// and the selection stays attached to its characters instead of drifting.
+			uiView.inputDelegate?.selectionWillChange(uiView)
 			uiView.layoutEngine.update(orientation: orientation)
+			uiView.inputDelegate?.selectionDidChange(uiView)
 			uiView.setNeedsDisplay()
 			layoutChanged = true
 		}
