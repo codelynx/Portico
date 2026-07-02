@@ -17,8 +17,13 @@ public class PorticoTextLayoutEngine {
 	public var orientation: PorticoLayoutOrientation
 	public private(set) var bounds: CGSize
 	public var cursorIndex: Int = 0
-	public var selectionRange: NSRange?
+	public var selectionRange: NSRange? {
+		didSet { selectionDidChange?(selectionRange) }
+	}
 	public var markedRange: NSRange?
+	/// Fired whenever the selection changes (nil when it collapses to a caret). Lets a client
+	/// observe the selected range — e.g. to drive a ruby-reading editor. Mirrors `textDidChange`.
+	public var selectionDidChange: ((NSRange?) -> Void)?
 	/// Whether the engine draws its own selection highlight. macOS keeps this on (it owns
 	/// rendering); iOS turns it off so `UITextInteraction` renders the native selection
 	/// tint + handles, avoiding a doubled fill.

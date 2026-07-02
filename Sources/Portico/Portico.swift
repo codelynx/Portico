@@ -4,18 +4,27 @@ import SwiftUI
 public struct PorticoView: NSViewRepresentable {
 	@Binding public var text: NSAttributedString
 	public var orientation: PorticoLayoutOrientation
-	
-	public init(text: Binding<NSAttributedString>, orientation: PorticoLayoutOrientation = .horizontal) {
+	private var selectedRange: Binding<NSRange?>?
+
+	public init(text: Binding<NSAttributedString>, orientation: PorticoLayoutOrientation = .horizontal,
+				selectedRange: Binding<NSRange?>? = nil) {
 		self._text = text
 		self.orientation = orientation
+		self.selectedRange = selectedRange
 	}
-	
+
 	public func makeNSView(context: Context) -> PorticoTextView {
 		let engine = PorticoTextLayoutEngine(attributedString: text, orientation: orientation)
 		let textBinding = _text
 		engine.textDidChange = { newText in
 			DispatchQueue.main.async {
 				textBinding.wrappedValue = newText
+			}
+		}
+		let selectionBinding = selectedRange
+		engine.selectionDidChange = { range in
+			DispatchQueue.main.async {
+				selectionBinding?.wrappedValue = range
 			}
 		}
 		return PorticoTextView(frame: .zero, layoutEngine: engine)
@@ -36,18 +45,27 @@ public struct PorticoView: NSViewRepresentable {
 public struct PorticoView: UIViewRepresentable {
 	@Binding public var text: NSAttributedString
 	public var orientation: PorticoLayoutOrientation
-	
-	public init(text: Binding<NSAttributedString>, orientation: PorticoLayoutOrientation = .horizontal) {
+	private var selectedRange: Binding<NSRange?>?
+
+	public init(text: Binding<NSAttributedString>, orientation: PorticoLayoutOrientation = .horizontal,
+				selectedRange: Binding<NSRange?>? = nil) {
 		self._text = text
 		self.orientation = orientation
+		self.selectedRange = selectedRange
 	}
-	
+
 	public func makeUIView(context: Context) -> PorticoTextView {
 		let engine = PorticoTextLayoutEngine(attributedString: text, orientation: orientation)
 		let textBinding = _text
 		engine.textDidChange = { newText in
 			DispatchQueue.main.async {
 				textBinding.wrappedValue = newText
+			}
+		}
+		let selectionBinding = selectedRange
+		engine.selectionDidChange = { range in
+			DispatchQueue.main.async {
+				selectionBinding?.wrappedValue = range
 			}
 		}
 		return PorticoTextView(frame: .zero, layoutEngine: engine)
