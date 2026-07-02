@@ -13,7 +13,7 @@ struct ContentView: View {
 		吾輩《わがはい》は猫《ねこ》である。名前《なまえ》はまだ無《な》い。
 		どこで生《う》れたかとんと見当《けんとう》がつかぬ。何《なに》でも薄暗《うすぐら》いじめじめした所《ところ》でニャーニャー泣《な》いていた事《こと》だけは記憶《きおく》している。吾輩はここで始《はじ》めて人間《にんげん》というものを見た。
 
-		Portico is a custom, high-performance text editor engine built directly on top of Core Text.
+		I am a cat. As yet I have no name. I have not the faintest idea where I was born. All I remember is that I was mewing in a damp, gloomy place — and it was there, for the first time, that I set eyes on a human being.
 		""")
 	@State private var orientation: PorticoLayoutOrientation = .horizontal
 	@State private var editing: RubyEdit?
