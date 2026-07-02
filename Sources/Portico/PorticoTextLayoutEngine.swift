@@ -847,16 +847,12 @@ public class PorticoTextLayoutEngine {
 		return origins
 	}
 
-	private func updateLayout() {
-		defer { if !relayingOutForBounds { onNeedsDisplay?() } } // repaint on content relayout (not bounds)
-		guard bounds.width > 0 && bounds.height > 0 else {
-			self.frameSetter = nil
-			self.textFrame = nil
-			return
-		}
-		
-		// Prepare the string for layout. We always apply a fixed line pitch (and,
-		// for vertical text, vertical glyph forms) so we work on a copy.
+	/// The string as actually laid out: the caller's content with the uniform
+	/// ruby-reserving line pitch merged into every paragraph style, plus vertical
+	/// glyph forms when vertical. Shared by `updateLayout()` and `measuredSize(inlineExtent:)`
+	/// so layout and measurement can never disagree (WYSIWYG parity). Independent of
+	/// `bounds` — valid on an engine that has never laid out.
+	private func layoutReadyString() -> NSAttributedString {
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
 		let fullRange = NSRange(location: 0, length: mutableString.length)
 
@@ -880,21 +876,144 @@ public class PorticoTextLayoutEngine {
 			// .verticalGlyphForm allows Core Text to substitute vertical variants of characters if the font supports it.
 			mutableString.addAttribute(.verticalGlyphForm, value: true, range: fullRange)
 		}
-		let stringToLayout: NSAttributedString = mutableString
-		
-		let setter = CTFramesetterCreateWithAttributedString(stringToLayout as CFAttributedString)
-		self.frameSetter = setter
-		
-		let path = CGMutablePath()
-		path.addRect(CGRect(origin: .zero, size: bounds))
-		
-		let frameAttributes: [CFString: Any] = [
-			kCTFrameProgressionAttributeName: orientation == .vertical ? 
-				CTFrameProgression.rightToLeft.rawValue : 
+		return mutableString
+	}
+
+	/// Core Text frame attributes for the current orientation — shared by layout and
+	/// measurement (parity covers the progression, not just the prepared string).
+	private var layoutFrameAttributes: [CFString: Any] {
+		[
+			kCTFrameProgressionAttributeName: orientation == .vertical ?
+				CTFrameProgression.rightToLeft.rawValue :
 				CTFrameProgression.topToBottom.rawValue
 		]
-		
-		self.textFrame = CTFramesetterCreateFrame(setter, CFRangeMake(0, 0), path, frameAttributes as CFDictionary)
+	}
+
+	private func updateLayout() {
+		defer { if !relayingOutForBounds { onNeedsDisplay?() } } // repaint on content relayout (not bounds)
+		guard bounds.width > 0 && bounds.height > 0 else {
+			self.frameSetter = nil
+			self.textFrame = nil
+			return
+		}
+
+		let setter = CTFramesetterCreateWithAttributedString(layoutReadyString() as CFAttributedString)
+		self.frameSetter = setter
+
+		let path = CGMutablePath()
+		path.addRect(CGRect(origin: .zero, size: bounds))
+
+		self.textFrame = CTFramesetterCreateFrame(setter, CFRangeMake(0, 0), path, layoutFrameAttributes as CFDictionary)
+	}
+
+	/// Measures the content's natural LAYOUT size — the rect to lay out or persist
+	/// (NOT ink extents; ruby overhang and outline live in ink-bounds territory).
+	/// `inlineExtent` is the wrap constraint along the writing direction — width when
+	/// horizontal, height when vertical; nil = unconstrained (manual line breaks
+	/// only). Results are ceiled to integral points. Uses the exact attribute
+	/// pipeline layout uses, so a frame laid out at the returned size shows the full
+	/// string. Independent of current `bounds`; valid on an engine that has never
+	/// laid out. Alignment positions text within a frame and does not change the
+	/// measured size.
+	public func measuredSize(inlineExtent: CGFloat? = nil) -> CGSize {
+		guard attributedString.length > 0 else { return .zero }
+		let setter = CTFramesetterCreateWithAttributedString(layoutReadyString() as CFAttributedString)
+		// Generous-but-finite bound for unconstrained axes: CGFloat.greatestFiniteMagnitude
+		// is known to make CTFramesetterSuggestFrameSizeWithConstraints misbehave.
+		let unbounded: CGFloat = 1_000_000
+		// Non-finite or non-positive constraints are treated as unconstrained.
+		let extent: CGFloat? = inlineExtent.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+		let constraint = orientation == .vertical
+			? CGSize(width: unbounded, height: extent ?? unbounded)
+			: CGSize(width: extent ?? unbounded, height: unbounded)
+		let suggested = CTFramesetterSuggestFrameSizeWithConstraints(
+			setter, CFRangeMake(0, 0), layoutFrameAttributes as CFDictionary, constraint, nil
+		)
+		guard suggested.width > 0 && suggested.height > 0 else { return .zero }
+
+		let fullLength = attributedString.length
+		func probe(_ candidate: CGSize) -> (fits: Bool, lineCount: Int) {
+			let path = CGMutablePath()
+			path.addRect(CGRect(origin: .zero, size: candidate))
+			let frame = CTFramesetterCreateFrame(setter, CFRangeMake(0, 0), path, layoutFrameAttributes as CFDictionary)
+			return (CTFrameGetVisibleStringRange(frame).length == fullLength, CFArrayGetCount(CTFrameGetLines(frame)))
+		}
+		func withBlockExtent(_ size: CGSize, _ block: CGFloat) -> CGSize {
+			orientation == .vertical
+				? CGSize(width: block, height: size.height)
+				: CGSize(width: size.width, height: block)
+		}
+
+		var size = CGSize(width: ceil(suggested.width), height: ceil(suggested.height))
+
+		// SuggestFrameSize is unreliable under the forced uniform line height, in BOTH
+		// directions: it overreports the block axis by a few points (observed), and its
+		// historically reported failure mode is UNDER-reporting. Verified-fit beats
+		// modeled-fit both ways:
+		//
+		// 1. End-verify the suggestion; repair UP if it under-reports (sanity-bounded —
+		//    the debug assert flags the pathological case).
+		var probed = probe(size)
+		if !probed.fits {
+			var attempts = 0
+			var block = orientation == .vertical ? size.width : size.height
+			while !probed.fits && attempts < 32 {
+				block += 4
+				size = withBlockExtent(size, block)
+				probed = probe(size)
+				attempts += 1
+			}
+			assert(probed.fits, "measuredSize: no fitting size within +128pt of the suggestion")
+		}
+
+		// 2. Tighten DOWN: binary-search the smallest fitting block extent between the
+		//    deterministic floor (lineCount × pitch under the uniform pitch) and the
+		//    known-fitting current size — fit is monotone in block extent. Skipped as a
+		//    PERF guard (not correctness; step 1 already guarantees fit) when caller
+		//    block spacing puts the floor uselessly far below the real extent.
+		if probed.fits && probed.lineCount > 0 && !hasBlockSpacingBeyondPitch {
+			let cap = orientation == .vertical ? size.width : size.height
+			let floor = min(cap, ceil(CGFloat(probed.lineCount) * rubyLinePitch()))
+			if probe(withBlockExtent(size, floor)).fits {
+				size = withBlockExtent(size, floor)
+			} else {
+				var lo = floor // known not to fit
+				var hi = cap   // known to fit
+				while hi - lo > 1 {
+					let mid = ((lo + hi) / 2).rounded(.down)
+					if probe(withBlockExtent(size, mid)).fits { hi = mid } else { lo = mid }
+				}
+				size = withBlockExtent(size, hi)
+			}
+		}
+		return size
+	}
+
+	/// Whether any caller paragraph style adds block extent on top of the uniform
+	/// pitch — paragraph spacing between paragraphs, or line spacing between lines
+	/// (Core Text applies `lineSpacing` even with min/max line height clamped).
+	/// A PERF guard for `measuredSize`'s tighten step: with such spacing the
+	/// lineCount × pitch floor sits uselessly far below the real extent and the
+	/// search degenerates. Fit itself is guaranteed by end-verification regardless.
+	private var hasBlockSpacingBeyondPitch: Bool {
+		var found = false
+		attributedString.enumerateAttribute(
+			.paragraphStyle,
+			in: NSRange(location: 0, length: attributedString.length)
+		) { value, _, stop in
+			if let style = value as? NSParagraphStyle,
+			   style.paragraphSpacing > 0 || style.paragraphSpacingBefore > 0 || style.lineSpacing > 0 {
+				found = true
+				stop.pointee = true
+			}
+		}
+		return found
+	}
+
+	/// Test hook (like `lineOrigins()`): how many characters the current layout shows.
+	func visibleStringRangeLength() -> Int {
+		guard let textFrame = textFrame else { return 0 }
+		return CTFrameGetVisibleStringRange(textFrame).length
 	}
 	
 	private func drawSelection(in context: CGContext) {
