@@ -245,6 +245,15 @@ the base run's stroke attributes in the stroke pass. If not, the stroke pass reb
 annotations carrying stroke attributes — **acceptance requires outlined ruby** (furigana over
 artwork needs the halo as much as the base text).
 
+**AS BUILT: R1 answered NO** — the `rubyIsOutlined` pixel gate showed zero rim pixels in the
+ruby band with base-run stroke attributes alone; Core Text does not propagate them to
+annotation glyphs. **The fallback shipped:** the stroke pass rebuilds each annotation
+(reading via `CTRubyAnnotationGetTextForPosition`, scale via `CTRubyAnnotationGetSizeFactor`,
+center/auto/before re-asserted — Portico's single mint site) carrying its own stroke
+attributes with the percent computed against the ruby font size, so the reading gets the same
+ABSOLUTE rim as the base. The stroke/fill line-origin parity assertion passes WITH the rebuilt
+annotations — the rebuild does not perturb layout.
+
 **Acceptance / tests:** with outline set, coverage sampling at a robust offset outside the
 glyph edge shows outline color (H + V, with ruby incl. long readings); fill color unchanged at
 glyph interiors (outline behind fill); `draw` and `drawText` agree; nil outline identical to

@@ -12,6 +12,26 @@ public enum PorticoLayoutOrientation {
 	case vertical
 }
 
+/// Whole-text outline (縁取り / fuchi). `width` is the ARTIST-FACING rim thickness
+/// in points — the visible halo outside the glyph edge. Core Text strokes are
+/// centered on the glyph path, so the stroke pass uses lineWidth = 2 × width and
+/// `inkBounds()` outsets by exactly `width`. A non-finite or ≤ 0 width behaves as
+/// no outline. Drawn BEHIND the fill; affects `draw(in:)`, `drawText(in:)`, and
+/// `inkBounds()` identically.
+public struct PorticoTextOutline: Equatable {
+	public var width: CGFloat
+	public var color: CGColor
+
+	public init(width: CGFloat, color: CGColor) {
+		self.width = width
+		self.color = color
+	}
+
+	public static func == (lhs: PorticoTextOutline, rhs: PorticoTextOutline) -> Bool {
+		lhs.width == rhs.width && CFEqual(lhs.color, rhs.color)
+	}
+}
+
 @MainActor
 public class PorticoTextLayoutEngine {
 	public var attributedString: NSAttributedString
@@ -872,6 +892,126 @@ public class PorticoTextLayoutEngine {
 	/// consumption sites coherent.
 	private var effectiveLinePitch: CGFloat { rubyLinePitch() * _linePitchMultiplier }
 
+	/// Whole-text outline; nil = off (default). Setting a different value (including
+	/// a color-only change) invalidates the cached stroke frame and repaints a live
+	/// view. Does not relayout — stroke attributes don't change advances (asserted
+	/// by the stroke/fill line-origin parity test).
+	public var outline: PorticoTextOutline? {
+		didSet {
+			guard outline != oldValue else { return }
+			strokeTextFrame = nil
+			onNeedsDisplay?()
+		}
+	}
+	/// The outline as applied: non-finite or ≤ 0 widths behave as off.
+	private var activeOutline: PorticoTextOutline? {
+		guard let outline, outline.width.isFinite, outline.width > 0 else { return nil }
+		return outline
+	}
+	/// Cached stroke-pass frame; invalidated by relayout and by `outline` changes.
+	private var strokeTextFrame: CTFrame?
+
+	/// The stroke-pass frame: the layout-ready string with CT stroke attributes
+	/// (positive width = stroke-only) framed identically to `textFrame`. Lazily
+	/// built and cached. Point width → percent-of-font-size conversion is per run
+	/// (mixed sizes stroke correctly even though MangaLoft v1 styles are uniform);
+	/// lineWidth = 2 × outline.width because CT centers strokes on the glyph path.
+	private func currentStrokeFrame() -> CTFrame? {
+		guard let o = activeOutline, textFrame != nil else { return nil }
+		if let cached = strokeTextFrame { return cached }
+
+		let strokeString = NSMutableAttributedString(attributedString: layoutReadyString())
+		let fullRange = NSRange(location: 0, length: strokeString.length)
+		let strokeWidthKey = NSAttributedString.Key(kCTStrokeWidthAttributeName as String)
+		let strokeColorKey = NSAttributedString.Key(kCTStrokeColorAttributeName as String)
+
+		strokeString.enumerateAttribute(.font, in: fullRange) { value, range, _ in
+			let pointSize = Self.pointSize(ofFontAttribute: value)
+			// kCTStrokeWidth is a PERCENT of the run's font size; positive = stroke-only.
+			let percent = (2 * o.width) / pointSize * 100
+			strokeString.addAttribute(strokeWidthKey, value: percent as NSNumber, range: range)
+		}
+		strokeString.addAttribute(strokeColorKey, value: o.color, range: fullRange)
+
+		// R1 (verified by the rubyIsOutlined gate): CTRubyAnnotation glyphs do NOT
+		// inherit the base run's stroke attributes — rebuild each annotation in the
+		// stroke pass carrying stroke attributes of its own, sized so the reading
+		// gets the same ABSOLUTE rim (percent is relative to the ruby font size =
+		// size factor × base size). Alignment/overhang are copied from the source
+		// annotation (today always center/auto — the single mint site — but copying
+		// doesn't rot if PorticoRuby ever grows options).
+		strokeString.enumerateAttribute(PorticoRuby.rubyKey, in: fullRange) { value, range, _ in
+			guard let value else { return }
+			// Foreign (non-CTRubyAnnotation) values under the ruby key are treated
+			// as non-ruby everywhere else in Portico — the stroke pass must not trap
+			// on them either.
+			guard CFGetTypeID(value as CFTypeRef) == CTRubyAnnotationGetTypeID() else { return }
+			let annotation = value as! CTRubyAnnotation
+			let reading = CTRubyAnnotationGetTextForPosition(annotation, .before)
+			guard let reading else { return }
+			let baseSize = Self.pointSize(
+				ofFontAttribute: strokeString.attribute(.font, at: range.location, effectiveRange: nil)
+			)
+			let sizeFactor = CTRubyAnnotationGetSizeFactor(annotation)
+			let rubySize = baseSize * (sizeFactor > 0 ? sizeFactor : 0.5)
+			let rubyPercent = (2 * o.width) / rubySize * 100
+			let rubyAttributes: [CFString: Any] = [
+				kCTStrokeWidthAttributeName: rubyPercent as NSNumber,
+				kCTStrokeColorAttributeName: o.color,
+			]
+			let strokeAnnotation = CTRubyAnnotationCreateWithAttributes(
+				CTRubyAnnotationGetAlignment(annotation),
+				CTRubyAnnotationGetOverhang(annotation),
+				.before,
+				reading,
+				rubyAttributes as CFDictionary
+			)
+			strokeString.addAttribute(PorticoRuby.rubyKey, value: strokeAnnotation, range: range)
+		}
+
+		let setter = CTFramesetterCreateWithAttributedString(strokeString as CFAttributedString)
+		let path = CGMutablePath()
+		path.addRect(CGRect(origin: .zero, size: bounds))
+		let frame = CTFramesetterCreateFrame(setter, CFRangeMake(0, 0), path, layoutFrameAttributes as CFDictionary)
+		strokeTextFrame = frame
+		return frame
+	}
+
+	/// Point size of a `.font` attribute value, whatever concrete type it carries
+	/// (platform font, CTFont, or absent/unrecognized — Core Text defaults to
+	/// Helvetica 12). Non-positive sizes fall back too, so percent conversion can
+	/// never divide by zero.
+	private static func pointSize(ofFontAttribute value: Any?) -> CGFloat {
+		let size: CGFloat
+		switch value {
+		case nil:
+			size = 0
+		#if canImport(AppKit)
+		case let font as NSFont:
+			size = font.pointSize
+		#elseif canImport(UIKit)
+		case let font as UIFont:
+			size = font.pointSize
+		#endif
+		case let some?:
+			size = CFGetTypeID(some as CFTypeRef) == CTFontGetTypeID()
+				? CTFontGetSize(some as! CTFont)
+				: 0
+		}
+		return size > 0 && size.isFinite ? size : 12
+	}
+
+	/// Test hook: the stroke frame's line origins, for the stroke/fill parity
+	/// assertion (stroke attributes must not change advances).
+	func strokeFrameLineOrigins() -> [CGPoint] {
+		guard let frame = currentStrokeFrame() else { return [] }
+		let lines = CTFrameGetLines(frame) as! [CTLine]
+		guard !lines.isEmpty else { return [] }
+		var origins = [CGPoint](repeating: .zero, count: lines.count)
+		CTFrameGetLineOrigins(frame, CFRangeMake(0, 0), &origins)
+		return origins
+	}
+
 	/// The string as actually laid out: the caller's content with the uniform
 	/// ruby-reserving line pitch merged into every paragraph style, plus vertical
 	/// glyph forms when vertical. Shared by `updateLayout()` and `measuredSize(inlineExtent:)`
@@ -916,6 +1056,7 @@ public class PorticoTextLayoutEngine {
 
 	private func updateLayout() {
 		defer { if !relayingOutForBounds { onNeedsDisplay?() } } // repaint on content relayout (not bounds)
+		strokeTextFrame = nil // stroke pass mirrors the layout; rebuilt lazily on next draw
 		guard bounds.width > 0 && bounds.height > 0 else {
 			self.frameSetter = nil
 			self.textFrame = nil
@@ -1090,6 +1231,11 @@ public class PorticoTextLayoutEngine {
 			guard !local.isNull, !local.isEmpty else { continue }
 			union = union.union(lineLocalToEngineRect(local, lineOrigin: origin))
 		}
+		// The outline's rim extends exactly `width` past the glyph edge (stroke
+		// lineWidth is 2 × width, centered on the path).
+		if !union.isNull, let o = activeOutline {
+			union = union.insetBy(dx: -o.width, dy: -o.width)
+		}
 		return union
 	}
 	
@@ -1104,8 +1250,18 @@ public class PorticoTextLayoutEngine {
 	/// The text itself — the one place glyphs hit the context. CoreText natively handles
 	/// vertical layout geometry when progression is rightToLeft and
 	/// kCTVerticalFormsAttributeName is applied. No context rotation needed on macOS!
+	/// When an outline is set, the stroke pass paints first (behind the fill) with a
+	/// round join — the default miter join spikes at sharp glyph corners, exactly the
+	/// manga-fuchi failure mode.
 	private func drawTextCore(in context: CGContext) {
 		guard let textFrame = textFrame else { return }
+		if let strokeFrame = currentStrokeFrame() {
+			context.saveGState()
+			context.setLineJoin(.round)
+			context.setLineCap(.round)
+			CTFrameDraw(strokeFrame, context)
+			context.restoreGState()
+		}
 		CTFrameDraw(textFrame, context)
 	}
 
