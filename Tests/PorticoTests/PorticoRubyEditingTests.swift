@@ -339,6 +339,35 @@ private func mutable(_ notation: String) -> NSMutableAttributedString {
 	#expect(e.rubyGroup(at: CGPoint(x: kan.maxX + 1, y: kan.midY)) == nil) // の (plain)
 }
 
+// MARK: - Clipboard round-trip (backs macOS copy/cut/paste)
+
+@Test func serializedSelectionEmitsNotationForRubyRange() {
+	let e = editEngine("漢字《かんじ》の") // "漢字の", ruby [0,2)
+	e.setSelectedRange(NSRange(location: 0, length: 2)) // select 漢字 (the group)
+	#expect(e.serializedSelection() == "｜漢字《かんじ》") // explicit-base form
+}
+
+@Test func serializedSelectionNilWithoutSelection() {
+	#expect(editEngine("漢字《かんじ》").serializedSelection() == nil)
+}
+
+@Test func insertNotationPastesRubyAtCursor() {
+	let e = editEngine("ab") // plain "ab", cursor at end (length 2)
+	e.insertNotation("漢字《かんじ》")
+	#expect(e.attributedString.string == "ab漢字")
+	#expect(PorticoRuby.rubyGroup(at: 2, in: e.attributedString)?.reading == "かんじ") // ruby preserved
+}
+
+@Test func copyPasteRoundTripsRubyThroughNotation() {
+	let src = editEngine("漢字《かんじ》")
+	src.setSelectedRange(NSRange(location: 0, length: 2))
+	let notation = src.serializedSelection()! // what Copy would place on the pasteboard
+	let dst = editEngine("") // empty target
+	dst.insertNotation(notation) // Paste
+	#expect(dst.attributedString.string == "漢字")
+	#expect(PorticoRuby.rubyGroup(at: 0, in: dst.attributedString)?.reading == "かんじ")
+}
+
 @Test func rubyAnchorRegularizedToFirstSegmentMatchesGeneralAnchor() {
 	// §7.2: the ruby anchor now delegates to the general first-segment anchor. For a selection
 	// that exactly equals a group's base, both must agree.

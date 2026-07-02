@@ -313,6 +313,46 @@ public class PorticoTextLayoutEngine {
 		updateLayout()
 	}
 
+	// MARK: - Clipboard round-trip (backs macOS copy/cut/paste)
+	// Ruby survives copy/paste by going through Aozora notation: Copy serializes the selection,
+	// Paste parses it back. See Docs/RubyEditing-Design.md §7.2.
+
+	/// The current selection serialized to Aozora notation (ruby preserved), or nil if there is no
+	/// non-empty selection. Plain text serializes to itself (no marks).
+	func serializedSelection() -> String? {
+		guard let sr = selectionRange, sr.length > 0 else { return nil }
+		return PorticoRuby.serialize(attributedString.attributedSubstring(from: sr))
+	}
+
+	/// Parse Aozora notation and insert it at the current target range (replacing any selection),
+	/// giving the pasted text the insertion context's base attributes (font/colour) while keeping
+	/// its parsed ruby annotations. Plain pasted text (no `《》`) inserts as plain text.
+	func insertNotation(_ notation: String) {
+		var contextAttrs: [NSAttributedString.Key: Any] =
+			(cursorIndex > 0 && cursorIndex <= attributedString.length)
+			? attributedString.attributes(at: cursorIndex - 1, effectiveRange: nil) : [:]
+		contextAttrs.removeValue(forKey: NSAttributedString.Key(kCTUnderlineStyleAttributeName as String))
+		contextAttrs.removeValue(forKey: PorticoRuby.rubyKey)
+		insertAttributedText(PorticoRuby.parse(notation, attributes: contextAttrs))
+	}
+
+	/// Replace the current target range (marked ▸ selection ▸ caret) with `attributed`, preserving
+	/// its attributes (incl. ruby), and advance the caret past it.
+	private func insertAttributedText(_ attributed: NSAttributedString) {
+		let mutableString = NSMutableAttributedString(attributedString: attributedString)
+		let targetRange: NSRange
+		if let mr = markedRange { targetRange = mr }
+		else if let sr = selectionRange { targetRange = sr }
+		else { targetRange = NSRange(location: cursorIndex, length: 0) }
+		mutableString.replaceCharacters(in: targetRange, with: attributed)
+		self.cursorIndex = targetRange.location + attributed.length
+		self.selectionRange = nil
+		self.markedRange = nil
+		self.attributedString = mutableString
+		textDidChange?(self.attributedString)
+		updateLayout()
+	}
+
 	/// Converts a just-closed inline ruby run `[｜]base《reading》` into a ruby group (§7a),
 	/// preserving the base text's existing attributes. Mutates `string`; returns the updated
 	/// cursor (end of the base) or `cursor` unchanged when there's nothing to convert.

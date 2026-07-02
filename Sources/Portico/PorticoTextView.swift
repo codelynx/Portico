@@ -100,19 +100,26 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 		}
 	}
 
-	// MARK: - Selection context menu (design §7.2 seam)
+	// MARK: - Context menu + clipboard (design §7.2 seam)
+	// macOS has no automatic clipboard for NSTextInputClient (unlike iOS's UITextInteraction), so
+	// Cut/Copy/Paste/Delete/Select All are implemented here as responder actions. This also lights
+	// up the app's Edit menu and ⌘X/⌘C/⌘V/⌘A (all routed through the responder chain to this first
+	// responder). Undo/Redo still needs an UndoManager wired to the engine — deferred.
 
-	/// Right-click over a non-empty selection offers the client's selection action, if any.
-	/// Requires an existing selection (right-click doesn't create one) — the intended flow is
-	/// select (drag / double-click) → right-click → action.
+	/// Right-click shows the standard editing items, plus the client's selection action (e.g.
+	/// Ruby…) when a selection exists and the seam is set.
 	public override func menu(for event: NSEvent) -> NSMenu? {
-		guard let action = onSelectionMenuAction,
-			  let selection = layoutEngine.selectionRange, selection.length > 0 else { return nil }
 		let menu = NSMenu()
-		let item = NSMenuItem(title: action.title,
-							  action: #selector(performSelectionMenuAction(_:)), keyEquivalent: "")
-		item.target = self
-		menu.addItem(item)
+		menu.addItem(withTitle: "Cut", action: #selector(cut(_:)), keyEquivalent: "").target = self
+		menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "").target = self
+		menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "").target = self
+		if let action = onSelectionMenuAction, (layoutEngine.selectionRange?.length ?? 0) > 0 {
+			menu.addItem(.separator())
+			let item = NSMenuItem(title: action.title,
+								  action: #selector(performSelectionMenuAction(_:)), keyEquivalent: "")
+			item.target = self
+			menu.addItem(item)
+		}
 		return menu
 	}
 
@@ -125,14 +132,54 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 		action.handler(selection, anchor)
 	}
 
-	/// Enable an app main-menu command targeting `performSelectionMenuAction:` only when a
-	/// selection exists (context-menu items are already gated by `menu(for:)`).
+	/// Copy the selection to the pasteboard as Aozora notation, so ruby survives copy/paste.
+	@objc public func copy(_ sender: Any?) {
+		guard let notation = layoutEngine.serializedSelection() else { return }
+		NSPasteboard.general.clearContents()
+		NSPasteboard.general.setString(notation, forType: .string)
+	}
+
+	@objc public func cut(_ sender: Any?) {
+		copy(sender)
+		guard layoutEngine.selectionRange != nil else { return }
+		layoutEngine.deleteBackward() // deletes the current selection
+		setNeedsDisplay(bounds)
+	}
+
+	@objc public func paste(_ sender: Any?) {
+		guard let string = NSPasteboard.general.string(forType: .string) else { return }
+		layoutEngine.insertNotation(string) // parses notation → ruby round-trips
+		setNeedsDisplay(bounds)
+	}
+
+	@objc public func delete(_ sender: Any?) {
+		guard layoutEngine.selectionRange != nil else { return }
+		layoutEngine.deleteBackward()
+		setNeedsDisplay(bounds)
+	}
+
+	@objc public override func selectAll(_ sender: Any?) {
+		layoutEngine.setSelectedRange(NSRange(location: 0, length: layoutEngine.attributedString.length))
+		setNeedsDisplay(bounds)
+	}
+
+	/// Validate both the app Edit menu (routed here as first responder) and our context menu:
+	/// clipboard/delete need a selection, paste needs pasteboard text, select-all needs content,
+	/// and the client action needs the seam plus a selection.
 	public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-		if menuItem.action == #selector(performSelectionMenuAction(_:)) {
-			return onSelectionMenuAction != nil
-				&& (layoutEngine.selectionRange?.length ?? 0) > 0
+		let hasSelection = (layoutEngine.selectionRange?.length ?? 0) > 0
+		switch menuItem.action {
+		case #selector(copy(_:)), #selector(cut(_:)), #selector(delete(_:)):
+			return hasSelection
+		case #selector(paste(_:)):
+			return NSPasteboard.general.string(forType: .string) != nil
+		case #selector(selectAll(_:)):
+			return layoutEngine.attributedString.length > 0
+		case #selector(performSelectionMenuAction(_:)):
+			return onSelectionMenuAction != nil && hasSelection
+		default:
+			return true
 		}
-		return true
 	}
 }
 
