@@ -176,6 +176,16 @@ private func rubies(_ attributed: NSAttributedString) -> [(base: String, range: 
 	}
 }
 
+@Test func fullSampleRoundTripsThroughMinimalSerialization() {
+	// Integration net: adjacent groups + mixed plain / kana / latin exercised together, catching
+	// interaction effects between groups and plain runs that the per-case tests can't.
+	let sample = "吾輩《わがはい》は猫《ねこ》である。名前《なまえ》はまだ無《な》い。｜Portico《ポルティコ》は時々《ときどき》動く。"
+	let once = PorticoRuby.parse(sample)
+	let reparsed = PorticoRuby.parse(PorticoRuby.serialize(once))
+	#expect(once.string == reparsed.string)
+	#expect(rubies(once).map { "\($0.base)=\($0.reading)" } == rubies(reparsed).map { "\($0.base)=\($0.reading)" })
+}
+
 @Test func serializeIgnoresForeignValueUnderRubyKey() {
 	// A non-CTRubyAnnotation value under the ruby key must not trap; emit plain.
 	let m = NSMutableAttributedString(string: "漢字")

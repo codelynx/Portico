@@ -81,6 +81,13 @@ PorticoRuby.serialize(_ attributed: NSAttributedString) -> String
 - Round-trip guarantee: `parse(serialize(x))` reproduces the same base text and
   readings. (Base text holding literal `《`/`》`/`｜` can't round-trip — no escaping
   in v1 — but `parse` never produces such bases, so its output always round-trips.)
+- **Clipboard** (the view layer, both platforms): Copy serializes the selection to
+  notation and Paste parses it, so ruby survives copy/paste within Portico. The
+  pasteboard gets notation as a plain string — deliberately, since Aozora notation
+  *is* Portico's plain-text interchange format: pasting `漢字《かんじ》` into an editor
+  or a submission site (narou / kakuyomu) is the intended behavior, not a leak. A
+  markup-free representation would have to displace the plain string and break that
+  workflow, so it's not offered.
 
 An internal primitive (not public in v1) does the actual attach:
 

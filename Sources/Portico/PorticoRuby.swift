@@ -98,10 +98,12 @@ public enum PorticoRuby {
 	/// Serializes an attributed string back to Aozora ruby notation — the inverse
 	/// of `parse`, for persistence.
 	///
-	/// Every ruby base is emitted in the **explicit `｜` form** (`｜base《reading》`),
-	/// which is unambiguous regardless of the base content, so `parse(serialize(x))`
-	/// reproduces the same base text and readings. Note: v1 has no escaping, so base
-	/// text containing literal `《`, `》`, or `｜` cannot round-trip (see spec §3.1);
+	/// Emitted in **minimal form**: the `｜` base mark is omitted when auto-detection would
+	/// recover the exact same base (a pure-kanji base with no plain kanji absorbed), and kept
+	/// only where it's needed to disambiguate. The per-group choice is made by re-parsing the
+	/// candidate (`autoBaseRoundTrips`), so serialize can't drift from `parse` and
+	/// `parse(serialize(x))` reproduces the same base text and readings. Note: v1 has no escaping,
+	/// so base text containing literal `《`, `》`, or `｜` cannot round-trip (see spec §3.1);
 	/// `parse` never produces such bases, so its output always round-trips.
 	public static func serialize(_ attributed: NSAttributedString) -> String {
 		let full = attributed.string as NSString

@@ -140,8 +140,8 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 	}
 
 	@objc public func cut(_ sender: Any?) {
+		guard (layoutEngine.selectionRange?.length ?? 0) > 0 else { return }
 		copy(sender)
-		guard layoutEngine.selectionRange != nil else { return }
 		layoutEngine.deleteBackward() // deletes the current selection
 		setNeedsDisplay(bounds)
 	}
@@ -153,7 +153,7 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 	}
 
 	@objc public func delete(_ sender: Any?) {
-		guard layoutEngine.selectionRange != nil else { return }
+		guard (layoutEngine.selectionRange?.length ?? 0) > 0 else { return }
 		layoutEngine.deleteBackward()
 		setNeedsDisplay(bounds)
 	}
@@ -395,7 +395,7 @@ public class PorticoTextView: UIView, UITextInput {
 	public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
 		let hasSelection = (layoutEngine.selectionRange?.length ?? 0) > 0
 		switch action {
-		case #selector(copy(_:)), #selector(cut(_:)):
+		case #selector(copy(_:)), #selector(cut(_:)), #selector(delete(_:)):
 			return hasSelection
 		case #selector(paste(_:)):
 			return UIPasteboard.general.hasStrings
@@ -412,8 +412,8 @@ public class PorticoTextView: UIView, UITextInput {
 	}
 
 	public override func cut(_ sender: Any?) {
+		guard (layoutEngine.selectionRange?.length ?? 0) > 0 else { return }
 		copy(sender)
-		guard layoutEngine.selectionRange != nil else { return }
 		inputDelegate?.textWillChange(self)
 		layoutEngine.deleteBackward() // deletes the current selection
 		inputDelegate?.textDidChange(self)
@@ -424,6 +424,14 @@ public class PorticoTextView: UIView, UITextInput {
 		guard let string = UIPasteboard.general.string else { return }
 		inputDelegate?.textWillChange(self)
 		layoutEngine.insertNotation(string) // parses notation → ruby round-trips
+		inputDelegate?.textDidChange(self)
+		setNeedsDisplay()
+	}
+
+	public override func delete(_ sender: Any?) {
+		guard (layoutEngine.selectionRange?.length ?? 0) > 0 else { return }
+		inputDelegate?.textWillChange(self)
+		layoutEngine.deleteBackward() // deletes the current selection
 		inputDelegate?.textDidChange(self)
 		setNeedsDisplay()
 	}
