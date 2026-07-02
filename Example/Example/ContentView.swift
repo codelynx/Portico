@@ -78,13 +78,17 @@ struct ContentView: View {
 	/// (Inline notation — typing `漢字《かんじ》` — also works directly in the view above.)
 	private var rubyEditor: some View {
 		HStack(spacing: 8) {
+			// The field is the state: type/edit a reading and commit (Enter or the button) to set
+			// it; commit an empty field to remove the ruby. One action covers both.
 			TextField("ふりがな (reading)", text: $reading)
 				.textFieldStyle(.roundedBorder)
 				.disabled(!hasSelection)
-			Button("Set") { applyRuby(reading) }
-				.disabled(!hasSelection || reading.trimmingCharacters(in: .whitespaces).isEmpty)
-			Button("Remove") { applyRuby(nil) }
-				.disabled(!hasSelection)
+				.onSubmit { applyRuby(reading) }
+			Button { applyRuby(reading) } label: {
+				Image(systemName: "checkmark")
+			}
+			.disabled(!hasSelection)
+			.help("Apply reading (empty removes the ruby)")
 		}
 	}
 
