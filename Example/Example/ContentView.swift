@@ -16,11 +16,16 @@ struct ContentView: View {
 		Portico is a custom, high-performance text editor engine built directly on top of Core Text.
 		""")
 	@State private var orientation: PorticoLayoutOrientation = .horizontal
-	@State private var selection: NSRange?
-	@State private var groupAnchor: CGRect?
+	@State private var editing: RubyEdit?
 	@State private var reading: String = ""
 
-	private var hasSelection: Bool { (selection?.length ?? 0) > 0 }
+	/// One in-flight ruby edit: the target range, where to anchor the popover, and whether the
+	/// selection exactly matches an existing group (→ prefilled reading + an explicit Remove).
+	private struct RubyEdit {
+		var range: NSRange
+		var anchor: CGRect
+		var isExistingGroup: Bool
+	}
 
 	var body: some View {
 		VStack(spacing: 12) {
@@ -31,77 +36,93 @@ struct ContentView: View {
 			.pickerStyle(.segmented)
 			.frame(maxWidth: 300)
 
-			// selectedRange + rubyGroupAnchor are the client contract for building ruby editing
-			// on the public API: observe the selection, and get the group's anchor rect (via
-			// the engine's anchorRect geometry) to float an editor beside it.
+			// One flow (design §7.2): select any text → native edit action (ルビ…) → this popover.
+			// The framework provides the menu item via the onSelectionMenuAction seam and hands
+			// back the selection range + first-segment anchor; the popover UI is ours.
+			// (Inline notation — typing 漢字《かんじ》 — also works directly in the view.)
 			PorticoView(text: $text, orientation: orientation,
-						selectedRange: $selection, rubyGroupAnchor: $groupAnchor)
+						onSelectionMenuAction: ("ルビ…", { range, anchor in
+							beginEditing(range: range, anchor: anchor)
+						}))
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 				.border(Color.gray)
-				.overlay(alignment: .topLeading) {
-					// Selecting an existing ruby group floats the editor next to it (anchorRect).
-					// Both axes are clamped to keep the editor on-screen: x matters in vertical
-					// (columns are right-aligned), y matters when the group sits near the bottom —
-					// the editor prefers to sit below the group but flips above if below would clip
-					// the bottom edge. (A real client should use a .popover for native edge-avoidance;
-					// this is the demo's own placement.)
-					if let anchor = groupAnchor {
-						GeometryReader { geo in
-							let editorWidth: CGFloat = 240
-							let editorHeight: CGFloat = 56 // estimate: padded TextField + button row
-							let belowY = anchor.maxY + 4
-							let aboveY = anchor.minY - editorHeight - 4
-							let preferredY = (belowY + editorHeight <= geo.size.height) ? belowY : aboveY
-							rubyEditor
-								.padding(8)
-								.frame(width: editorWidth, height: editorHeight)
-								.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-								.overlay(RoundedRectangle(cornerRadius: 8).stroke(.secondary))
-								.offset(x: max(0, min(anchor.minX, geo.size.width - editorWidth)),
-										y: max(0, min(preferredY, geo.size.height - editorHeight)))
-						}
-					}
-				}
+				.overlay(alignment: .topLeading) { rubyPopover }
 				.ignoresSafeArea(.keyboard, edges: .bottom)
-
-			// Bottom bar for adding ruby to a plain selection (no group to anchor to).
-			if groupAnchor == nil {
-				rubyEditor
-			}
 		}
 		.padding()
-		.onChange(of: selection) { newSelection in
-			// Prefill the field with the selected group's reading, if the selection is in one.
-			if let s = newSelection, s.length > 0, let group = PorticoRuby.rubyGroup(at: s.location, in: text) {
-				reading = group.reading
-			} else {
-				reading = ""
+	}
+
+	/// A floating editor anchored to the selection. Prefers to sit below the anchor but flips
+	/// above when that would clip the bottom edge, then clamps both axes into the frame.
+	/// (A production client should use a native `.popover` for edge-avoidance; this is the demo's
+	/// own placement.)
+	@ViewBuilder private var rubyPopover: some View {
+		if let edit = editing {
+			GeometryReader { geo in
+				let editorWidth: CGFloat = 280
+				let editorHeight: CGFloat = 56
+				let belowY = edit.anchor.maxY + 4
+				let aboveY = edit.anchor.minY - editorHeight - 4
+				let preferredY = (belowY + editorHeight <= geo.size.height) ? belowY : aboveY
+				rubyEditor(edit)
+					.padding(8)
+					.frame(width: editorWidth, height: editorHeight)
+					.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+					.overlay(RoundedRectangle(cornerRadius: 8).stroke(.secondary))
+					.offset(x: max(0, min(edit.anchor.minX, geo.size.width - editorWidth)),
+							y: max(0, min(preferredY, geo.size.height - editorHeight)))
 			}
 		}
 	}
 
-	/// Minimal ruby editor: select base text in the view, then set / edit / remove its reading.
-	/// (Inline notation — typing `漢字《かんじ》` — also works directly in the view above.)
-	private var rubyEditor: some View {
+	private func rubyEditor(_ edit: RubyEdit) -> some View {
 		HStack(spacing: 8) {
-			// The field is the state: type/edit a reading and commit (Enter or the button) to set
-			// it; commit an empty field to remove the ruby. One action covers both.
+			// Type/edit the reading and commit (Enter or ✓) to set it; an empty commit removes.
 			TextField("ふりがな (reading)", text: $reading)
 				.textFieldStyle(.roundedBorder)
-				.disabled(!hasSelection)
-				.onSubmit { applyRuby(reading) }
-			Button { applyRuby(reading) } label: {
-				Image(systemName: "checkmark")
+				.onSubmit { apply() }
+			Button { apply() } label: { Image(systemName: "checkmark") }
+				.help("Set reading")
+			// Editing an existing group also offers explicit removal (destruction stays visible,
+			// not only an empty-field side effect).
+			if edit.isExistingGroup {
+				Button(role: .destructive) { remove() } label: { Image(systemName: "trash") }
+					.help("Remove ruby")
 			}
-			.disabled(!hasSelection)
-			.help("Apply reading (empty removes the ruby)")
+			Button { editing = nil } label: { Image(systemName: "xmark") }
+				.help("Cancel")
 		}
 	}
 
-	private func applyRuby(_ newReading: String?) {
-		guard let s = selection, s.length > 0, s.location + s.length <= text.length else { return }
+	/// Open the editor for a menu-triggered selection. Prefill only when the selection **exactly**
+	/// matches an existing group's base (§7.2) — that's an edit. Any other selection (plain /
+	/// partial / spanning) starts empty and adds or replaces over the selection on apply.
+	private func beginEditing(range: NSRange, anchor: CGRect) {
+		if let group = PorticoRuby.rubyGroup(at: range.location, in: text), group.base == range {
+			reading = group.reading
+			editing = RubyEdit(range: range, anchor: anchor, isExistingGroup: true)
+		} else {
+			reading = ""
+			editing = RubyEdit(range: range, anchor: anchor, isExistingGroup: false)
+		}
+	}
+
+	private func apply() {
+		guard let edit = editing else { return }
+		setRuby(reading.isEmpty ? nil : reading, for: edit.range) // empty commit removes (shortcut)
+		editing = nil
+	}
+
+	private func remove() {
+		guard let edit = editing else { return }
+		setRuby(nil, for: edit.range)
+		editing = nil
+	}
+
+	private func setRuby(_ newReading: String?, for range: NSRange) {
+		guard range.location + range.length <= text.length else { return }
 		let mutable = NSMutableAttributedString(attributedString: text)
-		PorticoRuby.setRuby(newReading, for: s, in: mutable)
+		PorticoRuby.setRuby(newReading, for: range, in: mutable)
 		text = mutable
 	}
 }
