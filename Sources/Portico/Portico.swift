@@ -35,13 +35,22 @@ public struct PorticoView: NSViewRepresentable {
 	}
 	
 	public func updateNSView(_ nsView: PorticoTextView, context: Context) {
+		var layoutChanged = false
 		if nsView.layoutEngine.attributedString != text {
 			nsView.layoutEngine.update(attributedString: text)
 			nsView.setNeedsDisplay(nsView.bounds)
+			layoutChanged = true
 		}
 		if nsView.layoutEngine.orientation != orientation {
 			nsView.layoutEngine.update(orientation: orientation)
 			nsView.setNeedsDisplay(nsView.bounds)
+			layoutChanged = true
+		}
+		// A programmatic change (e.g. setRuby) reflows the layout, so the selected group's
+		// anchor may have moved even though the range didn't — refresh it. (macOS draws its
+		// own selection, so it re-renders correctly on setNeedsDisplay above.)
+		if layoutChanged, let anchorBinding = rubyGroupAnchor {
+			DispatchQueue.main.async { anchorBinding.wrappedValue = nsView.layoutEngine.rubyAnchorRectForSelection() }
 		}
 	}
 }
@@ -80,13 +89,27 @@ public struct PorticoView: UIViewRepresentable {
 	}
 	
 	public func updateUIView(_ uiView: PorticoTextView, context: Context) {
+		var layoutChanged = false
 		if uiView.layoutEngine.attributedString != text {
+			// A programmatic text change from outside the input system (e.g. setRuby). Bracket
+			// it with the UITextInput notifications so UITextInteraction re-queries its cached
+			// selection UI (handles/loupe) against the reflowed layout instead of leaving it
+			// stale. The `!= text` guard is false during a normal typing round-trip, so this
+			// fires only on genuine external changes.
+			uiView.inputDelegate?.textWillChange(uiView)
 			uiView.layoutEngine.update(attributedString: text)
+			uiView.inputDelegate?.textDidChange(uiView)
 			uiView.setNeedsDisplay()
+			layoutChanged = true
 		}
 		if uiView.layoutEngine.orientation != orientation {
 			uiView.layoutEngine.update(orientation: orientation)
 			uiView.setNeedsDisplay()
+			layoutChanged = true
+		}
+		// Reflow may have moved the selected group's anchor even if the range didn't change.
+		if layoutChanged, let anchorBinding = rubyGroupAnchor {
+			DispatchQueue.main.async { anchorBinding.wrappedValue = uiView.layoutEngine.rubyAnchorRectForSelection() }
 		}
 	}
 }
