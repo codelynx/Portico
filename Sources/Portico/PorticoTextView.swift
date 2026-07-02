@@ -111,7 +111,12 @@ extension PorticoTextView: @preconcurrency NSTextInputClient {
 		setNeedsDisplay(bounds)
 	}
 	
-	public func selectedRange() -> NSRange { return NSRange(location: layoutEngine.cursorIndex, length: 0) }
+	public func selectedRange() -> NSRange {
+		// Report the active selection (not just the caret) so IME/services queries see the
+		// real range the engine draws; collapse to a caret when there's no selection.
+		if let sr = layoutEngine.selectionRange { return sr }
+		return NSRange(location: layoutEngine.cursorIndex, length: 0)
+	}
 	
 	public func markedRange() -> NSRange { 
 		return layoutEngine.markedRange ?? NSRange(location: NSNotFound, length: 0) 
@@ -260,11 +265,28 @@ public class PorticoTextView: UIView, UITextInput {
 	// MARK: - UIKeyInput overrides (already inherited by UITextInput)
 	public var hasText: Bool { return layoutEngine.attributedString.length > 0 }
 	public func insertText(_ text: String) {
+		// Bracket with textWillChange/textDidChange so UITextInteraction re-queries geometry:
+		// insertText can reshape text beyond a plain append (inline ruby conversion strips
+		// `《》｜` marks on `》`; a boundary insert strips a ruby annotation, changing line
+		// height with no length change), leaving UIKit's cached caret/selection stale.
+		//
+		// Deliberate contract note: these methods are system-initiated, so per the letter of
+		// UITextInputDelegate we needn't notify on a *plain* edit. We bracket unconditionally
+		// anyway — the reshape triggers above are multiple and some are geometry-only (no length
+		// delta), so a pre-change "will it reshape?" predicate would be fragile and leak engine
+		// internals. The cost is a benign spurious notify on ordinary typing. (Marked-text edits
+		// stay unbracketed — see setMarkedText.) On-device IME/predictive-text smoke recommended.
+		inputDelegate?.textWillChange(self)
 		layoutEngine.insertText(text)
+		inputDelegate?.textDidChange(self)
 		setNeedsDisplay()
 	}
 	public func deleteBackward() {
+		// deleteBackward is grapheme-cluster–aware (may remove >1 UTF-16 unit), so the
+		// resulting caret can differ from UIKit's single-unit assumption — notify to re-query.
+		inputDelegate?.textWillChange(self)
 		layoutEngine.deleteBackward()
+		inputDelegate?.textDidChange(self)
 		setNeedsDisplay()
 	}
 
@@ -276,8 +298,11 @@ public class PorticoTextView: UIView, UITextInput {
 
 	public func replace(_ range: UITextRange, withText text: String) {
 		guard let r = (range as? PorticoTextRange)?.range else { return }
+		// Programmatic replacement: bracket so UIKit re-queries caret/selection geometry.
+		inputDelegate?.textWillChange(self)
 		layoutEngine.selectionRange = r
 		layoutEngine.insertText(text)
+		inputDelegate?.textDidChange(self)
 		setNeedsDisplay()
 	}
 
