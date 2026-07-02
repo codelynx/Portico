@@ -269,44 +269,52 @@ public class PorticoTextLayoutEngine {
 	}
 	
 	public func stringIndex(for point: CGPoint) -> Int {
-		guard let textFrame = textFrame else { return 0 }
-		
+		guard let hit = lineHit(for: point) else { return 0 }
+		return CTLineGetStringIndexForPosition(hit.line, hit.relativePoint)
+	}
+
+	/// Glyph *containing* `point` (containment semantics), for hit-testing. A tap on a glyph's
+	/// trailing half resolves to **that** glyph — not the following caret gap, as
+	/// `stringIndex(for:)` does (caret placement wants the nearest gap; hit-testing doesn't).
+	/// Points before/after the text yield an out-of-range index, which callers treat as "none".
+	private func glyphIndex(for point: CGPoint) -> Int {
+		guard let hit = lineHit(for: point) else { return 0 }
+		let caretIndex = CTLineGetStringIndexForPosition(hit.line, hit.relativePoint)
+		let caretOffset = CTLineGetOffsetForStringIndex(hit.line, caretIndex, nil)
+		// If the point is before the caret at caretIndex, the glyph under it is the prior one.
+		return hit.relativePoint.x < caretOffset ? caretIndex - 1 : caretIndex
+	}
+
+	/// The line closest to `point`, and `point` mapped into that line's local advance-axis
+	/// space (advance offset in `.x`). Shared by `stringIndex(for:)` and `glyphIndex(for:)`.
+	private func lineHit(for point: CGPoint) -> (line: CTLine, relativePoint: CGPoint)? {
+		guard let textFrame = textFrame else { return nil }
 		let lines = CTFrameGetLines(textFrame) as! [CTLine]
-		guard !lines.isEmpty else { return 0 }
-		
+		guard !lines.isEmpty else { return nil }
+
 		var origins = [CGPoint](repeating: .zero, count: lines.count)
 		CTFrameGetLineOrigins(textFrame, CFRangeMake(0, 0), &origins)
-		
+
 		var closestLineIndex = 0
 		var minDistance: CGFloat = .greatestFiniteMagnitude
-		
 		for i in 0..<lines.count {
 			let origin = origins[i]
-			let dist: CGFloat
-			if orientation == .vertical {
-				dist = abs(point.x - origin.x)
-			} else {
-				dist = abs(point.y - origin.y)
-			}
+			let dist = orientation == .vertical ? abs(point.x - origin.x) : abs(point.y - origin.y)
 			if dist < minDistance {
 				minDistance = dist
 				closestLineIndex = i
 			}
 		}
-		
-		let closestLine = lines[closestLineIndex]
+
 		let origin = origins[closestLineIndex]
-		
 		let relativePoint: CGPoint
 		if orientation == .vertical {
-			// For vertical text, the CTLine's internal advance axis (X) corresponds to the visual Y axis (going down).
+			// Vertical text: the CTLine's advance axis (X) maps to the visual Y axis (downward).
 			relativePoint = CGPoint(x: origin.y - point.y, y: 0)
 		} else {
-			// For horizontal text, internal X corresponds to visual X (going right).
 			relativePoint = CGPoint(x: point.x - origin.x, y: point.y - origin.y)
 		}
-		
-		return CTLineGetStringIndexForPosition(closestLine, relativePoint)
+		return (lines[closestLineIndex], relativePoint)
 	}
 	
 	public func rect(forCharacterRange range: NSRange) -> CGRect {
@@ -452,11 +460,13 @@ public class PorticoTextLayoutEngine {
 		return groupRects.dropFirst().reduce(first) { $0.union($1) }
 	}
 
-	/// The ruby group at `point` (layout coordinates), or nil. Resolves the base character
-	/// under the point; taps on the reading glyphs are approximate (they resolve via the
-	/// nearest base character, since Core Text doesn't fully contain the ruby ascent).
+	/// The ruby group at `point` (layout coordinates), or nil. Uses **containment** hit-testing
+	/// (a tap anywhere on a base glyph — including its trailing half — resolves to that glyph),
+	/// so tap-to-edit works even on a one-kanji base. Taps on the reading glyphs are approximate
+	/// (they resolve via the nearest base character, since Core Text doesn't fully contain the
+	/// ruby ascent).
 	public func rubyGroup(at point: CGPoint) -> (base: NSRange, reading: String)? {
-		PorticoRuby.rubyGroup(at: stringIndex(for: point), in: attributedString)
+		PorticoRuby.rubyGroup(at: glyphIndex(for: point), in: attributedString)
 	}
 
 	/// Natural height of a line that carries one row of ruby, measured from a real

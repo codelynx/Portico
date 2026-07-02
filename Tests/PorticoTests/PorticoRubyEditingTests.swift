@@ -328,3 +328,26 @@ private func mutable(_ notation: String) -> NSMutableAttributedString {
 	// A point past the text resolves to no group.
 	#expect(e.rubyGroup(at: CGPoint(x: 100000, y: kanRect.midY)) == nil)
 }
+
+@Test func rubyGroupAtPointHitsTrailingHalfOfSingleKanjiBase() {
+	// Containment vs caret: a tap on the trailing half of a one-kanji base must still find the
+	// group (the old caret-index path missed it), while the leading half of the next plain
+	// glyph must not.
+	let e = editEngine("漢《かん》の") // "漢の", ruby [0,1)
+	let kan = e.rect(forCharacterRange: NSRange(location: 0, length: 1)) // 漢
+	#expect(e.rubyGroup(at: CGPoint(x: kan.maxX - 1, y: kan.midY))?.base == NSRange(location: 0, length: 1))
+	#expect(e.rubyGroup(at: CGPoint(x: kan.maxX + 1, y: kan.midY)) == nil) // の (plain)
+}
+
+@Test func rubyGeometryWorksInVertical() {
+	let e = PorticoTextLayoutEngine(
+		attributedString: PorticoRuby.parse("漢字《かんじ》"),
+		orientation: .vertical,
+		bounds: CGSize(width: 400, height: 400)
+	)
+	let rects = e.rects(forRubyGroupContaining: 0)
+	#expect(!rects.isEmpty && rects.allSatisfy { $0.width > 0 && $0.height > 0 })
+	#expect(e.anchorRect(forRubyGroupContaining: 0) != .null)
+	let r = rects[0]
+	#expect(e.rubyGroup(at: CGPoint(x: r.midX, y: r.midY))?.base == NSRange(location: 0, length: 2))
+}
