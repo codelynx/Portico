@@ -97,6 +97,9 @@ orientation change, so UIKit re-queries handle geometry instead of leaving handl
   drift horizontally — the caret follows the intermediate line's width instead of remembering
   its origin column. Engine-level (`moveCursor` / `index(from:moving:)`), so it affects both
   platforms. Not addressed.
+- **macOS `insertText(_:replacementRange:)`** ignores its `replacementRange` and always targets
+  the current marked/selection/caret range. IME passes `NSNotFound` so this is correct in
+  practice; a caller passing a real range would be mishandled. Not currently addressed.
 - **`position(within:farthestIn:)`** is a `nil` stub — line-start/line-end layout navigation
   (e.g. macOS ⌘←/→ semantics via `UITextInput`) isn't wired. Arrow and Shift+Arrow navigation
   route through `position(from:in:)` / `characterRange(byExtending:)`, which are implemented.

@@ -158,6 +158,25 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 	#expect(e.cursorIndex == 3)
 }
 
+// MARK: - selectionRange normalization + zero-length targeting (backs iOS replace)
+
+@Test func selectionRangeCollapsesZeroLengthToNil() {
+	let e = engine("abcdefg")
+	e.selectionRange = NSRange(location: 3, length: 0) // publicly settable; must normalize
+	#expect(e.selectionRange == nil)
+}
+
+@Test func zeroLengthSetSelectedRangeTargetsItsLocationOnInsert() {
+	// Mirrors UITextInput.replace with a zero-length range (QuickType / point insertion): the
+	// insert must land at the range's location, not the old cursor. Regression for the
+	// selectionRange-normalization interaction.
+	let e = engine("abcdefg")
+	e.cursorIndex = 0
+	e.setSelectedRange(NSRange(location: 5, length: 0))
+	e.insertText("X")
+	#expect(e.attributedString.string == "abcdeXfg") // inserted at 5, not at 0
+}
+
 // MARK: - index(from:moving:) — orientation-aware caret movement (backs iOS UITextInput nav)
 
 @Test func indexUpDownMoveByLineInHorizontalText() {

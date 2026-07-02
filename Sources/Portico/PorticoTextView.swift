@@ -440,7 +440,11 @@ public class PorticoTextView: UIView, UITextInput {
 		guard let r = (range as? PorticoTextRange)?.range else { return }
 		// Programmatic replacement: bracket so UIKit re-queries caret/selection geometry.
 		inputDelegate?.textWillChange(self)
-		layoutEngine.selectionRange = r
+		// Route through setSelectedRange, not a raw `selectionRange = r`: a zero-length `r`
+		// (UIKit sends these for QuickType / point insertions) must target its *location*, but the
+		// setter normalizes zero-length to nil — setSelectedRange moves the caret to `r.location`
+		// so insertText inserts there instead of falling back to the old cursor.
+		layoutEngine.setSelectedRange(r)
 		layoutEngine.insertText(text)
 		inputDelegate?.textDidChange(self)
 		setNeedsDisplay()
