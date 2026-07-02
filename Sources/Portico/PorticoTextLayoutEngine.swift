@@ -36,7 +36,6 @@ public class PorticoTextLayoutEngine {
 	/// orientation change can't leave it stale.
 	public var drawsCaret: Bool { drawsSelectionHighlight || orientation == .vertical }
 	private var selectionAnchorIndex: Int?
-	private let rubyAttributeKey = NSAttributedString.Key(kCTRubyAnnotationAttributeName as String)
 	public var textDidChange: ((NSAttributedString) -> Void)?
 	
 	private var frameSetter: CTFramesetter?
@@ -124,7 +123,7 @@ public class PorticoTextLayoutEngine {
 		// Same ruby attribute-edge rule as insertText: composing text joins a ruby group only
 		// when strictly inside one; at a boundary it must not inherit the base's ruby (§6).
 		if !insertionExtendsRubyGroup(at: targetRange.location, replacing: targetRange.length, in: mutableString) {
-			markedAttrs.removeValue(forKey: rubyAttributeKey)
+			markedAttrs.removeValue(forKey: PorticoRuby.rubyKey)
 		}
 
 		let insertedString = NSAttributedString(string: text, attributes: markedAttrs)
@@ -216,7 +215,7 @@ public class PorticoTextLayoutEngine {
 		let afterIndex = location + length
 		guard beforeIndex >= 0, afterIndex < string.length else { return false }
 		var beforeRange = NSRange(location: 0, length: 0)
-		guard string.attribute(rubyAttributeKey, at: beforeIndex, effectiveRange: &beforeRange) != nil else { return false }
+		guard string.attribute(PorticoRuby.rubyKey, at: beforeIndex, effectiveRange: &beforeRange) != nil else { return false }
 		return NSLocationInRange(afterIndex, beforeRange)
 	}
 
@@ -240,7 +239,7 @@ public class PorticoTextLayoutEngine {
 		// strictly inside one; at a group boundary it is plain text — fixes typing after a
 		// base extending its ruby. See Docs/RubyEditing-Design.md §6.
 		if !insertionExtendsRubyGroup(at: targetRange.location, replacing: targetRange.length, in: mutableString) {
-			cleanAttrs.removeValue(forKey: rubyAttributeKey)
+			cleanAttrs.removeValue(forKey: PorticoRuby.rubyKey)
 		}
 
 		let insertedString = NSAttributedString(string: text, attributes: cleanAttrs)
@@ -267,7 +266,7 @@ public class PorticoTextLayoutEngine {
 				in: string.string as NSString,
 				closingAt: cursor - 1,
 				// Auto-base must not swallow a character already in a ruby group.
-				isRuby: { string.attribute(self.rubyAttributeKey, at: $0, effectiveRange: nil) != nil })
+				isRuby: { string.attribute(PorticoRuby.rubyKey, at: $0, effectiveRange: nil) != nil })
 		else { return cursor }
 		// Keep the base with its attributes, drop the marks + reading, then attach the ruby.
 		let base = NSMutableAttributedString(attributedString: string.attributedSubstring(from: match.baseRange))

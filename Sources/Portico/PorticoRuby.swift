@@ -22,7 +22,8 @@ public enum PorticoRuby {
 	private static let rubyOpen: Character = "《"   // U+300A
 	private static let rubyClose: Character = "》"  // U+300B
 	private static let baseMark: Character = "｜"   // U+FF5C
-	private static let rubyKey = NSAttributedString.Key(kCTRubyAnnotationAttributeName as String)
+	/// The attributed-string key holding a `CTRubyAnnotation`. Shared across the module.
+	static let rubyKey = NSAttributedString.Key(kCTRubyAnnotationAttributeName as String)
 
 	/// Parses Aozora ruby notation into an attributed string.
 	///
