@@ -535,16 +535,36 @@ public class PorticoTextLayoutEngine {
 		return groupRects.dropFirst().reduce(first) { $0.union($1) }
 	}
 
-	/// SwiftUI-client convenience: the anchor rect of the ruby group at the selection's start,
-	/// in **top-left / SwiftUI coordinates** (the layout-coordinate `anchorRect` flipped by the
-	/// current bounds), or nil if the selection isn't inside a group. Lets a SwiftUI overlay be
-	/// positioned next to the group without the client doing Core Text coordinate math.
-	public func rubyAnchorRectForSelection() -> CGRect? {
-		guard let range = selectionRange, range.length > 0,
-			  PorticoRuby.rubyGroup(at: range.location, in: attributedString) != nil else { return nil }
-		let r = anchorRect(forRubyGroupContaining: range.location)
+	/// The **first segment in document/layout order** of `range` — its run on the first line
+	/// (horizontal) / first column (vertical RTL order), in layout coordinates — or `.null` if the
+	/// range is empty or unlaid. This is the popover-anchor policy (design §7.2): compact and
+	/// stable, unlike the union (arbitrary in vertical/wrapped) or the active end (drag-direction
+	/// dependent, undefined for word-select / right-click). `selectionRects` yields one rect per
+	/// line in document order, so its first element is exactly the first segment.
+	private func firstSegmentRect(for range: NSRange) -> CGRect {
+		return selectionRects(for: range).first ?? .null
+	}
+
+	/// SwiftUI-client convenience: a **popover-anchor** rect (not a selection-bounds rect) for the
+	/// current selection, in **top-left / SwiftUI coordinates** (layout rect flipped by the current
+	/// bounds), or nil when there's no non-empty selection. Anchors to the selection's first segment
+	/// in document order (§7.2). Works for **any** selection — ruby or plain — so a client can float
+	/// one editor surface next to any selection. Supersedes `rubyAnchorRectForSelection`.
+	public func anchorRectForSelection() -> CGRect? {
+		guard let range = selectionRange, range.length > 0 else { return nil }
+		let r = firstSegmentRect(for: range)
 		guard !r.isNull else { return nil }
 		return CGRect(x: r.minX, y: bounds.height - r.maxY, width: r.width, height: r.height)
+	}
+
+	/// Like `anchorRectForSelection` but nil unless the selection is inside a ruby group.
+	/// **Superseded by `anchorRectForSelection`** (which handles plain selections too) — retained
+	/// for the current binding path; regularized to the same first-segment policy (§7.2), fixing
+	/// its former coarse-union anchor.
+	public func rubyAnchorRectForSelection() -> CGRect? {
+		guard let range = selectionRange,
+			  PorticoRuby.rubyGroup(at: range.location, in: attributedString) != nil else { return nil }
+		return anchorRectForSelection()
 	}
 
 	/// The ruby group at `point` (layout coordinates), or nil. Uses **containment** hit-testing

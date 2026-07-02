@@ -157,3 +157,39 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 	#expect(e.selectionRange == nil)
 	#expect(e.cursorIndex == 3)
 }
+
+// MARK: - anchorRectForSelection (popover anchor, §7.2 first-segment policy)
+
+@Test func anchorRectForSelectionNilWithoutSelection() {
+	#expect(engine("Hello").anchorRectForSelection() == nil)
+}
+
+@Test func anchorRectForSelectionWorksForPlainSelection() {
+	let e = engine("Hello world")
+	e.setSelectedRange(NSRange(location: 0, length: 5)) // plain text, no ruby
+	#expect(e.anchorRectForSelection() != nil) // plain selections now anchor — the point of §7.2
+}
+
+@Test func anchorRectForSelectionIsFirstSegmentNotUnionHorizontal() {
+	let e = engine("abc\ndef") // two lines
+	let range = NSRange(location: 0, length: 7)
+	e.setSelectedRange(range)
+	let rects = e.selectionRects(for: range)
+	#expect(rects.count >= 2) // genuinely spans two line segments
+	let unionHeight = rects.dropFirst().reduce(rects[0]) { $0.union($1) }.height
+	let anchor = e.anchorRectForSelection()
+	#expect(anchor != nil)
+	#expect(anchor!.height < unionHeight) // one line tall — first segment, not the two-line union
+}
+
+@Test func anchorRectForSelectionUsesFirstColumnVertical() {
+	let e = engine("abc\ndef", orientation: .vertical) // two columns
+	let range = NSRange(location: 0, length: 7)
+	e.setSelectedRange(range)
+	let rects = e.selectionRects(for: range)
+	#expect(rects.count >= 2)
+	let unionWidth = rects.dropFirst().reduce(rects[0]) { $0.union($1) }.width
+	let anchor = e.anchorRectForSelection()
+	#expect(anchor != nil)
+	#expect(anchor!.width < unionWidth) // one column wide — first segment, not the multi-column union
+}

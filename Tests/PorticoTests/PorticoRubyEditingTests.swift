@@ -339,6 +339,17 @@ private func mutable(_ notation: String) -> NSMutableAttributedString {
 	#expect(e.rubyGroup(at: CGPoint(x: kan.maxX + 1, y: kan.midY)) == nil) // の (plain)
 }
 
+@Test func rubyAnchorRegularizedToFirstSegmentMatchesGeneralAnchor() {
+	// §7.2: the ruby anchor now delegates to the general first-segment anchor. For a selection
+	// that exactly equals a group's base, both must agree.
+	let e = editEngine("漢字《かんじ》") // base [0,2)
+	e.setSelectedRange(NSRange(location: 0, length: 2))
+	let ruby = e.rubyAnchorRectForSelection()
+	let general = e.anchorRectForSelection()
+	#expect(ruby != nil && general != nil)
+	#expect(ruby == general)
+}
+
 @Test func rubyGeometryWorksInVertical() {
 	let e = PorticoTextLayoutEngine(
 		attributedString: PorticoRuby.parse("漢字《かんじ》"),
