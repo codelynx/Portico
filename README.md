@@ -7,6 +7,16 @@ iOS. Portico handles native hit-testing, selection, and input events itself, so 
 switch seamlessly between **horizontal and vertical** layouts — including Japanese
 **ruby (furigana)** — without giving up standard text-editor behavior.
 
+## Screenshots
+
+The same document — Sōseki's *I Am a Cat* with furigana — laid out both ways on both
+platforms, with the in-place ruby editor open.
+
+|  | Horizontal | Vertical |
+|---|---|---|
+| **macOS** | <img src="Docs/images/macos-horizontal.png" width="380" alt="Portico on macOS, horizontal"> | <img src="Docs/images/macos-vertical.png" width="380" alt="Portico on macOS, vertical"> |
+| **iOS** | <img src="Docs/images/ios-horizontal.png" width="380" alt="Portico on iOS, horizontal"> | <img src="Docs/images/ios-vertical.png" width="380" alt="Portico on iOS, vertical"> |
+
 ## Features
 
 - **Horizontal & vertical** Japanese text layout (縦書き / 横書き).
