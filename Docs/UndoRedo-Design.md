@@ -27,7 +27,18 @@ the engine's stack automatically through the responder chain.
 - **Independent per engine** — two components = two engines = two stacks; no interleaving.
 - **Lifecycle follows the model** — while the client retains the engine, undo history survives
   view teardown (navigation, cell reuse, tab switch); re-attaching a fresh view keeps it. Engine
-  deallocates ⇒ stack goes with it.
+  deallocates ⇒ stack goes with it. On deinit the engine removes its own actions from the manager
+  (`removeAllActions(withTarget:)`) so an *injected* manager that outlives it is never left with
+  dangling actions.
+- **`@MainActor` engine.** Because `UndoManager` is main-actor-isolated in the SDK, the engine is
+  `@MainActor` (it's main-thread UI state anyway — the views are already main-actor). Consequence:
+  **background/offscreen layout on a non-main queue isn't supported.**
+- **Injected `groupsByEvent`.** The default manager uses `groupsByEvent = false` and explicit
+  per-step groups. An injected manager keeps *its* setting; a `groupsByEvent = true` manager
+  (e.g. `NSDocument`'s default) nests our per-step groups inside its per-run-loop event group, so
+  several programmatic edits in one cycle coalesce into one undo. That's expected, matches
+  `NSTextView`'s document behavior, and is left as-is (forcing `false` would reject the most
+  natural host managers).
 
 **API implication — engine injection.** `PorticoView(text:)` creates the engine internally, tying
 undo to the view. Model-scoped undo requires the client to own the engine:

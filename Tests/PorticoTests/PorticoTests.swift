@@ -219,6 +219,37 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 	#expect(!e.undoManager.canUndo) // only Portico's actions were cleared (target-scoped)
 }
 
+@Test func undoRestoresSelectionAnchorSoShiftArrowStillExtends() {
+	let e = engine("hello world")
+	e.setSelectedRange(NSRange(location: 0, length: 5)) // anchor 0, cursor 5
+	e.insertText("Hi")                                  // replace → "Hi world"
+	e.undoManager.undo()                                // restore text + selection + anchor
+	#expect(e.selectionRange == NSRange(location: 0, length: 5))
+	e.moveCursor(direction: .right, modifySelection: true) // extends from the restored anchor
+	#expect(e.selectionRange == NSRange(location: 0, length: 6))
+}
+
+@Test func injectedManagerLosesEngineActionsWhenEngineDeallocates() {
+	// Injected (host) manager outlives the engine; its deinit must remove the engine's actions,
+	// or the host's next undo targets a freed engine.
+	let m = UndoManager(); m.groupsByEvent = false
+	autoreleasepool {
+		let e = PorticoTextLayoutEngine(attributedString: NSAttributedString(string: ""),
+										bounds: CGSize(width: 100, height: 100), undoManager: m)
+		e.insertText("abc")
+		#expect(m.canUndo)
+	}
+	#expect(!m.canUndo) // isolated deinit cleared the engine's actions from the host manager
+}
+
+@Test func identicalExternalReplacementKeepsUndoStack() {
+	let e = engine("")
+	e.insertText("abc")
+	#expect(e.undoManager.canUndo)
+	e.update(attributedString: NSAttributedString(string: "abc")) // equal content → no-op reset
+	#expect(e.undoManager.canUndo) // history preserved (not a genuine document change)
+}
+
 @Test func engineDeallocatesDespiteUndoRegistrations() {
 	// Retain-cycle contract: the manager holds the engine unowned and the handler captures only
 	// the snapshot, so registering undo must not keep the engine alive.

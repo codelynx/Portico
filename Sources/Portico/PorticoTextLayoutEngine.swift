@@ -74,17 +74,31 @@ public class PorticoTextLayoutEngine {
 		updateLayout()
 	}
 
+	// Remove this engine's registered actions when it deallocates. Harmless for the default
+	// manager (it dies with the engine), but essential when a host manager is **injected**: the
+	// manager holds the engine unowned, so leftover actions would target a freed engine and crash
+	// the host's next undo. `isolated` runs the cleanup on the main actor (the engine is @MainActor).
+	isolated deinit {
+		undoManager.removeAllActions(withTarget: self)
+	}
+
 	// MARK: - Undo / Redo (snapshot per step; see Docs/UndoRedo-Design.md)
 
-	/// A restorable edit state. Restoring it reproduces the text and caret/selection exactly.
+	/// A restorable edit state. Restoring it reproduces the text and caret/selection exactly —
+	/// including `selectionAnchorIndex`, so a Shift+Arrow after an undo still extends from the
+	/// right end. The attributed string is stored as an **immutable copy** so a later mutation of
+	/// the (mutable) instance the engine was holding can't corrupt history.
 	private struct EditSnapshot {
 		let attributedString: NSAttributedString
 		let cursorIndex: Int
 		let selectionRange: NSRange?
+		let selectionAnchorIndex: Int?
 	}
 
 	private func currentSnapshot() -> EditSnapshot {
-		EditSnapshot(attributedString: attributedString, cursorIndex: cursorIndex, selectionRange: selectionRange)
+		EditSnapshot(attributedString: attributedString.copy() as! NSAttributedString,
+					 cursorIndex: cursorIndex, selectionRange: selectionRange,
+					 selectionAnchorIndex: selectionAnchorIndex)
 	}
 
 	/// Restore a snapshot without going through the edit paths (so it doesn't re-register undo or
@@ -94,7 +108,7 @@ public class PorticoTextLayoutEngine {
 		attributedString = snapshot.attributedString
 		cursorIndex = snapshot.cursorIndex
 		markedRange = nil
-		selectionAnchorIndex = nil
+		selectionAnchorIndex = snapshot.selectionAnchorIndex // restore the anchor, not just the range
 		updateLayout()
 		selectionRange = snapshot.selectionRange // didSet fires selectionDidChange
 		textDidChange?(attributedString)
@@ -135,8 +149,11 @@ public class PorticoTextLayoutEngine {
 	}
 
 	public func update(attributedString: NSAttributedString) {
-		// External replacement = document reset: clear only *our* registered actions (never the
-		// whole manager — a host-injected one owns the app's history too), and end any typing run.
+		// A change in content is a document reset. Identical content is a no-op: keep undo history
+		// (a direct-engine client calling this idempotently mustn't lose its stack) and skip relayout.
+		guard !self.attributedString.isEqual(attributedString) else { return }
+		// Document reset: clear only *our* registered actions (never the whole manager — a
+		// host-injected one owns the app's history too), and end any typing run.
 		undoManager.removeAllActions(withTarget: self)
 		typingRunOpen = false
 		self.attributedString = attributedString
@@ -370,7 +387,13 @@ public class PorticoTextLayoutEngine {
 	}
 
 	public func insertText(_ text: String) {
-		beginCoalescedTypingStep() // one undo per typing run (snapshot captured before the first key)
+		// One undo per typing run — but NOT while committing an IME composition (markedRange set):
+		// the current state is the underlined marked candidate, so snapshotting it would register a
+		// wrong step. IME-commit undo (restoring the pre-composition state) is deferred to Phase 3
+		// (Docs/UndoRedo-Design.md §6). Composition itself registers nothing (see setMarkedText).
+		if markedRange == nil {
+			beginCoalescedTypingStep()
+		}
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
 
 		let targetRange: NSRange
