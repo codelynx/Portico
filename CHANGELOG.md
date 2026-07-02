@@ -2,7 +2,7 @@
 
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
-## [Unreleased]
+## [0.3.0] - 2026-07-02
 ### Added
 - **Undo / redo** across every edit — typing (coalesced into runs), delete, paste, cut, ruby
   (`setRuby`), and inline `《》` conversion. Driven by Edit ▸ Undo / ⌘Z / iOS shake. Undo is
