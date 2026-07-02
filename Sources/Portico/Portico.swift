@@ -17,33 +17,55 @@ public struct PorticoSelectionMenuAction {
 
 #if os(macOS)
 public struct PorticoView: NSViewRepresentable {
-	@Binding public var text: NSAttributedString
-	public var orientation: PorticoLayoutOrientation
+	private var textBinding: Binding<NSAttributedString>?
+	private var providedEngine: PorticoTextLayoutEngine?
+	private var orientation: PorticoLayoutOrientation?
 	private var selectedRange: Binding<NSRange?>?
 	private var onSelectionMenuAction: PorticoSelectionMenuAction?
 
+	/// Convenience: Portico owns the engine internally, driven by the `text` binding. Undo history
+	/// is **view-scoped** (lives with this view). For document/model-scoped undo that survives view
+	/// teardown, use `init(engine:)` and retain the engine yourself.
 	public init(text: Binding<NSAttributedString>, orientation: PorticoLayoutOrientation = .horizontal,
 				selectedRange: Binding<NSRange?>? = nil,
 				onSelectionMenuAction: PorticoSelectionMenuAction? = nil) {
-		self._text = text
+		self.textBinding = text
+		self.orientation = orientation
+		self.selectedRange = selectedRange
+		self.onSelectionMenuAction = onSelectionMenuAction
+	}
+
+	/// Model mode: the **client owns the engine** (its text, undo stack, and lifecycle), so undo is
+	/// model-scoped — retain the engine and history survives view teardown. Notes:
+	/// - **Out:** read `engine.attributedString`; observe `engine.textDidChange`. Passing
+	///   `selectedRange` makes the view own `engine.selectionDidChange` — use the binding **or** your
+	///   own `selectionDidChange`, not both.
+	/// - **Orientation** is engine state; pass `orientation` (non-nil) to drive it from SwiftUI
+	///   (`nil` = leave it to the engine, set `engine.update(orientation:)` yourself).
+	/// - **Engine identity is fixed for the view's lifetime** — give the view a stable `.id(...)`
+	///   per engine to switch documents, and use **one live view per engine**.
+	public init(engine: PorticoTextLayoutEngine, orientation: PorticoLayoutOrientation? = nil,
+				selectedRange: Binding<NSRange?>? = nil,
+				onSelectionMenuAction: PorticoSelectionMenuAction? = nil) {
+		self.providedEngine = engine
 		self.orientation = orientation
 		self.selectedRange = selectedRange
 		self.onSelectionMenuAction = onSelectionMenuAction
 	}
 
 	public func makeNSView(context: Context) -> PorticoTextView {
-		let engine = PorticoTextLayoutEngine(attributedString: text, orientation: orientation)
-		let textBinding = _text
-		engine.textDidChange = { newText in
-			DispatchQueue.main.async {
-				textBinding.wrappedValue = newText
-			}
+		let engine: PorticoTextLayoutEngine
+		if let providedEngine {
+			engine = providedEngine // wrap — never update(attributedString:) on attach (would clear undo)
+			if let orientation, engine.orientation != orientation { engine.update(orientation: orientation) }
+		} else {
+			engine = PorticoTextLayoutEngine(attributedString: textBinding!.wrappedValue,
+											 orientation: orientation ?? .horizontal)
+			let textBinding = self.textBinding!
+			engine.textDidChange = { newText in DispatchQueue.main.async { textBinding.wrappedValue = newText } }
 		}
-		let selectionBinding = selectedRange
-		engine.selectionDidChange = { range in
-			DispatchQueue.main.async {
-				selectionBinding?.wrappedValue = range
-			}
+		if let selectionBinding = selectedRange { // only own the callback when a binding is supplied
+			engine.selectionDidChange = { range in DispatchQueue.main.async { selectionBinding.wrappedValue = range } }
 		}
 		let view = PorticoTextView(frame: .zero, layoutEngine: engine)
 		view.onSelectionMenuAction = onSelectionMenuAction
@@ -52,45 +74,71 @@ public struct PorticoView: NSViewRepresentable {
 
 	public func updateNSView(_ nsView: PorticoTextView, context: Context) {
 		nsView.onSelectionMenuAction = onSelectionMenuAction // refresh each render to avoid a stale closure
-		if nsView.layoutEngine.attributedString != text {
-			nsView.layoutEngine.update(attributedString: text)
+		let engine = nsView.layoutEngine
+		// Only the binding (text:) mode syncs external text into the engine (a document reset).
+		// Injected-engine mode never does — that's the client's model, and a reset would clear undo.
+		if let textBinding, engine.attributedString != textBinding.wrappedValue {
+			engine.update(attributedString: textBinding.wrappedValue)
 			nsView.setNeedsDisplay(nsView.bounds)
 		}
-		if nsView.layoutEngine.orientation != orientation {
-			nsView.layoutEngine.update(orientation: orientation)
+		if let orientation, engine.orientation != orientation {
+			engine.update(orientation: orientation)
 			nsView.setNeedsDisplay(nsView.bounds)
 		}
 	}
 }
 #elseif os(iOS)
 public struct PorticoView: UIViewRepresentable {
-	@Binding public var text: NSAttributedString
-	public var orientation: PorticoLayoutOrientation
+	private var textBinding: Binding<NSAttributedString>?
+	private var providedEngine: PorticoTextLayoutEngine?
+	private var orientation: PorticoLayoutOrientation?
 	private var selectedRange: Binding<NSRange?>?
 	private var onSelectionMenuAction: PorticoSelectionMenuAction?
 
+	/// Convenience: Portico owns the engine internally, driven by the `text` binding. Undo history
+	/// is **view-scoped**. For document/model-scoped undo that survives view teardown, use
+	/// `init(engine:)` and retain the engine yourself.
 	public init(text: Binding<NSAttributedString>, orientation: PorticoLayoutOrientation = .horizontal,
 				selectedRange: Binding<NSRange?>? = nil,
 				onSelectionMenuAction: PorticoSelectionMenuAction? = nil) {
-		self._text = text
+		self.textBinding = text
+		self.orientation = orientation
+		self.selectedRange = selectedRange
+		self.onSelectionMenuAction = onSelectionMenuAction
+	}
+
+	/// Model mode: the **client owns the engine** (text, undo, lifecycle), so undo is model-scoped
+	/// and survives view teardown while the engine is retained. Notes:
+	/// - **Out:** read `engine.attributedString`; observe `engine.textDidChange`. Passing
+	///   `selectedRange` makes the view own `engine.selectionDidChange` — use the binding **or** your
+	///   own `selectionDidChange`, not both.
+	/// - **Orientation** is engine state; pass `orientation` (non-nil) to drive it from SwiftUI —
+	///   which also brackets the flip so `UITextInteraction`'s selection handles don't detach — or
+	///   pass `nil` and set `engine.update(orientation:)` yourself.
+	/// - **Engine identity is fixed for the view's lifetime** — give the view a stable `.id(...)`
+	///   per engine to switch documents, and use **one live view per engine**.
+	public init(engine: PorticoTextLayoutEngine, orientation: PorticoLayoutOrientation? = nil,
+				selectedRange: Binding<NSRange?>? = nil,
+				onSelectionMenuAction: PorticoSelectionMenuAction? = nil) {
+		self.providedEngine = engine
 		self.orientation = orientation
 		self.selectedRange = selectedRange
 		self.onSelectionMenuAction = onSelectionMenuAction
 	}
 
 	public func makeUIView(context: Context) -> PorticoTextView {
-		let engine = PorticoTextLayoutEngine(attributedString: text, orientation: orientation)
-		let textBinding = _text
-		engine.textDidChange = { newText in
-			DispatchQueue.main.async {
-				textBinding.wrappedValue = newText
-			}
+		let engine: PorticoTextLayoutEngine
+		if let providedEngine {
+			engine = providedEngine // wrap — never update(attributedString:) on attach (would clear undo)
+			if let orientation, engine.orientation != orientation { engine.update(orientation: orientation) }
+		} else {
+			engine = PorticoTextLayoutEngine(attributedString: textBinding!.wrappedValue,
+											 orientation: orientation ?? .horizontal)
+			let textBinding = self.textBinding!
+			engine.textDidChange = { newText in DispatchQueue.main.async { textBinding.wrappedValue = newText } }
 		}
-		let selectionBinding = selectedRange
-		engine.selectionDidChange = { range in
-			DispatchQueue.main.async {
-				selectionBinding?.wrappedValue = range
-			}
+		if let selectionBinding = selectedRange {
+			engine.selectionDidChange = { range in DispatchQueue.main.async { selectionBinding.wrappedValue = range } }
 		}
 		let view = PorticoTextView(frame: .zero, layoutEngine: engine)
 		view.onSelectionMenuAction = onSelectionMenuAction
@@ -99,24 +147,19 @@ public struct PorticoView: UIViewRepresentable {
 
 	public func updateUIView(_ uiView: PorticoTextView, context: Context) {
 		uiView.onSelectionMenuAction = onSelectionMenuAction // refresh each render to avoid a stale closure
-		if uiView.layoutEngine.attributedString != text {
-			// A programmatic text change from outside the input system (e.g. setRuby). Bracket
-			// it with the UITextInput notifications so UITextInteraction re-queries its cached
-			// selection UI (handles/loupe) against the reflowed layout instead of leaving it
-			// stale. The `!= text` guard is false during a normal typing round-trip, so this
-			// fires only on genuine external changes.
+		let engine = uiView.layoutEngine
+		// Only the binding (text:) mode syncs external text into the engine (a document reset).
+		// Injected-engine mode never does — resetting a client's model would clear its undo stack.
+		if let textBinding, engine.attributedString != textBinding.wrappedValue {
+			// Bracket the external change so UITextInteraction re-queries its cached selection UI.
 			uiView.inputDelegate?.textWillChange(uiView)
-			uiView.layoutEngine.update(attributedString: text)
+			engine.update(attributedString: textBinding.wrappedValue)
 			uiView.inputDelegate?.textDidChange(uiView)
 			uiView.setNeedsDisplay()
 		}
-		if uiView.layoutEngine.orientation != orientation {
-			// Orientation flips the whole layout, so the selection's geometry changes even
-			// though its range doesn't. Bracket with the selection notifications (not the text
-			// pair — this isn't a text change) so UITextInteraction re-queries handle geometry
-			// and the selection stays attached to its characters instead of drifting.
+		if let orientation, engine.orientation != orientation {
 			uiView.inputDelegate?.selectionWillChange(uiView)
-			uiView.layoutEngine.update(orientation: orientation)
+			engine.update(orientation: orientation)
 			uiView.inputDelegate?.selectionDidChange(uiView)
 			uiView.setNeedsDisplay()
 		}

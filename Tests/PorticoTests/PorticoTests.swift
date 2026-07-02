@@ -250,6 +250,15 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 	#expect(e.undoManager.canUndo) // history preserved (not a genuine document change)
 }
 
+@Test func wrappingEngineInViewDoesNotClearUndo() {
+	// Contract: attaching a view to an injected engine must NOT clear its undo (no reset-on-attach).
+	let e = engine("")
+	e.insertText("abc")
+	#expect(e.undoManager.canUndo)
+	_ = PorticoTextView(frame: .zero, layoutEngine: e)
+	#expect(e.undoManager.canUndo) // wrapping the engine in a view left the stack intact
+}
+
 @Test func engineDeallocatesDespiteUndoRegistrations() {
 	// Retain-cycle contract: the manager holds the engine unowned and the handler captures only
 	// the snapshot, so registering undo must not keep the engine alive.

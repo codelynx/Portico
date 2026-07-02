@@ -44,6 +44,15 @@ public class PorticoTextLayoutEngine {
 	public var drawsCaret: Bool { drawsSelectionHighlight || orientation == .vertical }
 	private var selectionAnchorIndex: Int?
 	public var textDidChange: ((NSAttributedString) -> Void)?
+	/// Framework-internal (set by `PorticoView`, **not** part of the client observation API): fired
+	/// after every content relayout so the view repaints on engine-driven changes it didn't
+	/// initiate — undo/redo, a client's `setRuby`. A **single slot** the view overwrites, so a live
+	/// engine backs **one view** at a time (a second view over the same engine would fight over
+	/// input/IME anyway).
+	var onNeedsDisplay: (() -> Void)?
+	/// Set while relaying out purely for a bounds change (from the view's draw path), so the
+	/// `onNeedsDisplay` repaint isn't re-scheduled from inside drawing.
+	private var relayingOutForBounds = false
 
 	/// The undo stack for this engine's edits (see Docs/UndoRedo-Design.md). Undo is **model-scoped**:
 	/// it lives with the engine, not the view, so it's independent per engine and survives view
@@ -189,6 +198,8 @@ public class PorticoTextLayoutEngine {
 	public func update(bounds: CGSize) {
 		if self.bounds != bounds {
 			self.bounds = bounds
+			relayingOutForBounds = true // a bounds relayout comes from draw(); don't re-schedule a repaint
+			defer { relayingOutForBounds = false }
 			updateLayout()
 		}
 	}
@@ -815,6 +826,7 @@ public class PorticoTextLayoutEngine {
 	}
 
 	private func updateLayout() {
+		defer { if !relayingOutForBounds { onNeedsDisplay?() } } // repaint on content relayout (not bounds)
 		guard bounds.width > 0 && bounds.height > 0 else {
 			self.frameSetter = nil
 			self.textFrame = nil

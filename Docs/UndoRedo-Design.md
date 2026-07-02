@@ -48,10 +48,14 @@ PorticoView(engine: retainedEngine)        // client owns model + undo (survives
 PorticoView(text: $binding, …)             // convenience; engine internal → undo is view-scoped
 ```
 
-- **Orientation single source of truth:** orientation is **engine state**. The `engine:` API does
-  **not** take an orientation parameter (that would duplicate `engine.orientation`); it drives the
-  engine's orientation (e.g. via a binding that writes through). The `text:` sugar keeps its
-  `orientation:` param and forwards it to the internal engine.
+- **Orientation:** orientation is **engine state** (single source of truth). The `engine:` API
+  takes an **optional** `orientation` param: non-nil drives it from SwiftUI (write-through in
+  `updateView`); `nil` leaves it to the engine (client calls `engine.update(orientation:)`).
+  **Redraw is automatic either way** (`onNeedsDisplay`); the reason to route orientation *through
+  the view* is iOS-specific — the view brackets the flip with selection notifications so a live
+  `UITextInteraction` handle doesn't detach. The `text:` sugar keeps its non-optional `orientation:`. *(Refines an
+  earlier "drop the param" note — an optional param preserves engine-as-source while keeping the
+  iOS selection-bracket on flips.)*
 - **Observation seam:** the `engine:` path has no `text` binding, so text/selection changes for
   dirty-tracking, save state, and view refresh flow through the engine's existing
   `textDidChange` / `selectionDidChange` callbacks. Document these as the observation contract.
@@ -122,6 +126,15 @@ its own step. The asymmetry: after an IME commit that forms ruby, undo #1 revert
 literal notation, but the commit itself has no step yet. **Phase 3 must** capture a pre-composition
 snapshot at composition start and register it on commit, so IME-commit-then-conversion undoes in
 two steps, identical to typed input.
+
+**Phase-3 obligation — iOS selection-UI after engine-external undo.** On iOS, undo/redo driven by
+the vended `UndoManager` (⌘Z / shake) reflows the engine but leaves `UITextInteraction`'s cached
+selection UI stale (Phase 3a repaints text via `onNeedsDisplay` but doesn't bracket). Fix source-
+side, not from `onNeedsDisplay` (which fires inside view-initiated `inputDelegate` brackets —
+reentrancy): the view observes the engine's `UndoManager` did-undo/did-redo notifications and
+brackets those specific transitions with `inputDelegate` selection notifications, leaving the
+typing paths untouched. Client-`setRuby` staleness is separate — likely absorbed by 3c's Example
+popover flow, which already brackets.
 
 ## 7. Scope (v1)
 

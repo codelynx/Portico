@@ -17,6 +17,9 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 	public init(frame: NSRect, layoutEngine: PorticoTextLayoutEngine) {
 		self.layoutEngine = layoutEngine
 		super.init(frame: frame)
+		// Repaint on engine-driven changes the view didn't initiate — undo/redo, client setRuby,
+		// external edits. Weak self: the engine may outlive the view (client-owned, injected).
+		layoutEngine.onNeedsDisplay = { [weak self] in self?.needsDisplay = true }
 	}
 	
 	public required init?(coder: NSCoder) {
@@ -25,6 +28,10 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 	
 	public override var isFlipped: Bool { return false }
 	public override var acceptsFirstResponder: Bool { return true }
+
+	/// Vend the engine's undo manager up the responder chain, so Edit ▸ Undo/Redo and ⌘Z drive the
+	/// engine's model-scoped stack (see Docs/UndoRedo-Design.md §1).
+	public override var undoManager: UndoManager? { layoutEngine.undoManager }
 	
 	public override func draw(_ dirtyRect: NSRect) {
 		super.draw(dirtyRect)
@@ -263,6 +270,11 @@ public class PorticoTextView: UIView, UITextInput {
 		super.init(frame: frame)
 		self.backgroundColor = .clear
 		self.contentMode = .redraw
+		// Repaint on engine-driven changes the view didn't initiate — undo/redo, client setRuby.
+		// Weak self: the engine may outlive the view (client-owned, injected). (Refreshing
+		// UITextInteraction's cached selection UI after an engine-external change is a separate
+		// on-device concern — see Phase 3 notes.)
+		layoutEngine.onNeedsDisplay = { [weak self] in self?.setNeedsDisplay() }
 
 		// Let UIKit own selection UI: a UITextInteraction drives caret placement,
 		// word/loupe selection, and grab handles through our UITextInput conformance
@@ -281,6 +293,10 @@ public class PorticoTextView: UIView, UITextInput {
 	}
 	
 	public override var canBecomeFirstResponder: Bool { return true }
+
+	/// Vend the engine's undo manager up the responder chain, so ⌘Z / shake-to-undo drive the
+	/// engine's model-scoped stack (see Docs/UndoRedo-Design.md §1).
+	public override var undoManager: UndoManager? { layoutEngine.undoManager }
 
 	// Hardware arrow keys (and Shift+arrow selection) are driven by UITextInteraction through
 	// UITextInput — `position(from:in:offset:)` / `characterRange(byExtending:in:)` — which route
