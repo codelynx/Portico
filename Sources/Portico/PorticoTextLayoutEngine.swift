@@ -12,6 +12,26 @@ public enum PorticoLayoutOrientation {
 	case vertical
 }
 
+/// Whole-text outline (縁取り / fuchi). `width` is the ARTIST-FACING rim thickness
+/// in points — the visible halo outside the glyph edge. Core Text strokes are
+/// centered on the glyph path, so the stroke pass uses lineWidth = 2 × width and
+/// `inkBounds()` outsets by exactly `width`. A non-finite or ≤ 0 width behaves as
+/// no outline. Drawn BEHIND the fill; affects `draw(in:)`, `drawText(in:)`, and
+/// `inkBounds()` identically.
+public struct PorticoTextOutline: Equatable {
+	public var width: CGFloat
+	public var color: CGColor
+
+	public init(width: CGFloat, color: CGColor) {
+		self.width = width
+		self.color = color
+	}
+
+	public static func == (lhs: PorticoTextOutline, rhs: PorticoTextOutline) -> Bool {
+		lhs.width == rhs.width && CFEqual(lhs.color, rhs.color)
+	}
+}
+
 @MainActor
 public class PorticoTextLayoutEngine {
 	public var attributedString: NSAttributedString
@@ -40,7 +60,8 @@ public class PorticoTextLayoutEngine {
 	/// text is vertical — UIKit's `UITextInteraction` can't render a vertical-text caret
 	/// (it collapses our wide-short caret rect to a stub), so the engine draws it even when
 	/// iOS otherwise owns selection. Computed from the live `orientation` so a runtime
-	/// orientation change can't leave it stale.
+	/// orientation change can't leave it stale. Affects `draw(in:)` only — for a
+	/// display/raster render with no editing chrome, use `drawText(in:)`.
 	public var drawsCaret: Bool { drawsSelectionHighlight || orientation == .vertical }
 	private var selectionAnchorIndex: Int?
 	public var textDidChange: ((NSAttributedString) -> Void)?
@@ -846,16 +867,157 @@ public class PorticoTextLayoutEngine {
 		return origins
 	}
 
-	private func updateLayout() {
-		defer { if !relayingOutForBounds { onNeedsDisplay?() } } // repaint on content relayout (not bounds)
-		guard bounds.width > 0 && bounds.height > 0 else {
-			self.frameSetter = nil
-			self.textFrame = nil
-			return
+	/// Scales the uniform ruby-reserving line pitch. 1.0 (default) = the standard
+	/// ruby-sized pitch; < 1 tightens (ruby may overlap the previous line — the
+	/// client's judgment); > 1 loosens. Clamped to [0.5, 3]; non-finite values are
+	/// ignored. Setting a different value relayouts (and repaints a live view).
+	/// Affects layout, `measuredSize`, and rendering identically — it feeds the one
+	/// shared pitch. Note: in vertical orientation Core Text adds a small constant
+	/// per-column leading on top of the pitch, so the multiplier scales the pitch
+	/// term, not the absolute column advance.
+	public var linePitchMultiplier: CGFloat {
+		get { _linePitchMultiplier }
+		set {
+			guard newValue.isFinite else { return } // NaN/∞ ignored (min/max pass NaN through)
+			let clamped = min(max(newValue, 0.5), 3.0)
+			guard clamped != _linePitchMultiplier else { return }
+			_linePitchMultiplier = clamped
+			updateLayout()
 		}
-		
-		// Prepare the string for layout. We always apply a fixed line pitch (and,
-		// for vertical text, vertical glyph forms) so we work on a copy.
+	}
+	private var _linePitchMultiplier: CGFloat = 1.0
+
+	/// The pitch actually applied everywhere pitch matters (layout-string prep and
+	/// the `measuredSize` block-extent floor) — the single source keeping the two
+	/// consumption sites coherent.
+	private var effectiveLinePitch: CGFloat { rubyLinePitch() * _linePitchMultiplier }
+
+	/// Whole-text outline; nil = off (default). Setting a different value (including
+	/// a color-only change) invalidates the cached stroke frame and repaints a live
+	/// view. Does not relayout — stroke attributes don't change advances (asserted
+	/// by the stroke/fill line-origin parity test).
+	public var outline: PorticoTextOutline? {
+		didSet {
+			guard outline != oldValue else { return }
+			strokeTextFrame = nil
+			onNeedsDisplay?()
+		}
+	}
+	/// The outline as applied: non-finite or ≤ 0 widths behave as off.
+	private var activeOutline: PorticoTextOutline? {
+		guard let outline, outline.width.isFinite, outline.width > 0 else { return nil }
+		return outline
+	}
+	/// Cached stroke-pass frame; invalidated by relayout and by `outline` changes.
+	private var strokeTextFrame: CTFrame?
+
+	/// The stroke-pass frame: the layout-ready string with CT stroke attributes
+	/// (positive width = stroke-only) framed identically to `textFrame`. Lazily
+	/// built and cached. Point width → percent-of-font-size conversion is per run
+	/// (mixed sizes stroke correctly even though MangaLoft v1 styles are uniform);
+	/// lineWidth = 2 × outline.width because CT centers strokes on the glyph path.
+	private func currentStrokeFrame() -> CTFrame? {
+		guard let o = activeOutline, textFrame != nil else { return nil }
+		if let cached = strokeTextFrame { return cached }
+
+		let strokeString = NSMutableAttributedString(attributedString: layoutReadyString())
+		let fullRange = NSRange(location: 0, length: strokeString.length)
+		let strokeWidthKey = NSAttributedString.Key(kCTStrokeWidthAttributeName as String)
+		let strokeColorKey = NSAttributedString.Key(kCTStrokeColorAttributeName as String)
+
+		strokeString.enumerateAttribute(.font, in: fullRange) { value, range, _ in
+			let pointSize = Self.pointSize(ofFontAttribute: value)
+			// kCTStrokeWidth is a PERCENT of the run's font size; positive = stroke-only.
+			let percent = (2 * o.width) / pointSize * 100
+			strokeString.addAttribute(strokeWidthKey, value: percent as NSNumber, range: range)
+		}
+		strokeString.addAttribute(strokeColorKey, value: o.color, range: fullRange)
+
+		// R1 (verified by the rubyIsOutlined gate): CTRubyAnnotation glyphs do NOT
+		// inherit the base run's stroke attributes — rebuild each annotation in the
+		// stroke pass carrying stroke attributes of its own, sized so the reading
+		// gets the same ABSOLUTE rim (percent is relative to the ruby font size =
+		// size factor × base size). Alignment/overhang are copied from the source
+		// annotation (today always center/auto — the single mint site — but copying
+		// doesn't rot if PorticoRuby ever grows options).
+		strokeString.enumerateAttribute(PorticoRuby.rubyKey, in: fullRange) { value, range, _ in
+			guard let value else { return }
+			// Foreign (non-CTRubyAnnotation) values under the ruby key are treated
+			// as non-ruby everywhere else in Portico — the stroke pass must not trap
+			// on them either.
+			guard CFGetTypeID(value as CFTypeRef) == CTRubyAnnotationGetTypeID() else { return }
+			let annotation = value as! CTRubyAnnotation
+			let reading = CTRubyAnnotationGetTextForPosition(annotation, .before)
+			guard let reading else { return }
+			let baseSize = Self.pointSize(
+				ofFontAttribute: strokeString.attribute(.font, at: range.location, effectiveRange: nil)
+			)
+			let sizeFactor = CTRubyAnnotationGetSizeFactor(annotation)
+			let rubySize = baseSize * (sizeFactor > 0 ? sizeFactor : 0.5)
+			let rubyPercent = (2 * o.width) / rubySize * 100
+			let rubyAttributes: [CFString: Any] = [
+				kCTStrokeWidthAttributeName: rubyPercent as NSNumber,
+				kCTStrokeColorAttributeName: o.color,
+			]
+			let strokeAnnotation = CTRubyAnnotationCreateWithAttributes(
+				CTRubyAnnotationGetAlignment(annotation),
+				CTRubyAnnotationGetOverhang(annotation),
+				.before,
+				reading,
+				rubyAttributes as CFDictionary
+			)
+			strokeString.addAttribute(PorticoRuby.rubyKey, value: strokeAnnotation, range: range)
+		}
+
+		let setter = CTFramesetterCreateWithAttributedString(strokeString as CFAttributedString)
+		let path = CGMutablePath()
+		path.addRect(CGRect(origin: .zero, size: bounds))
+		let frame = CTFramesetterCreateFrame(setter, CFRangeMake(0, 0), path, layoutFrameAttributes as CFDictionary)
+		strokeTextFrame = frame
+		return frame
+	}
+
+	/// Point size of a `.font` attribute value, whatever concrete type it carries
+	/// (platform font, CTFont, or absent/unrecognized — Core Text defaults to
+	/// Helvetica 12). Non-positive sizes fall back too, so percent conversion can
+	/// never divide by zero.
+	private static func pointSize(ofFontAttribute value: Any?) -> CGFloat {
+		let size: CGFloat
+		switch value {
+		case nil:
+			size = 0
+		#if canImport(AppKit)
+		case let font as NSFont:
+			size = font.pointSize
+		#elseif canImport(UIKit)
+		case let font as UIFont:
+			size = font.pointSize
+		#endif
+		case let some?:
+			size = CFGetTypeID(some as CFTypeRef) == CTFontGetTypeID()
+				? CTFontGetSize(some as! CTFont)
+				: 0
+		}
+		return size > 0 && size.isFinite ? size : 12
+	}
+
+	/// Test hook: the stroke frame's line origins, for the stroke/fill parity
+	/// assertion (stroke attributes must not change advances).
+	func strokeFrameLineOrigins() -> [CGPoint] {
+		guard let frame = currentStrokeFrame() else { return [] }
+		let lines = CTFrameGetLines(frame) as! [CTLine]
+		guard !lines.isEmpty else { return [] }
+		var origins = [CGPoint](repeating: .zero, count: lines.count)
+		CTFrameGetLineOrigins(frame, CFRangeMake(0, 0), &origins)
+		return origins
+	}
+
+	/// The string as actually laid out: the caller's content with the uniform
+	/// ruby-reserving line pitch merged into every paragraph style, plus vertical
+	/// glyph forms when vertical. Shared by `updateLayout()` and `measuredSize(inlineExtent:)`
+	/// so layout and measurement can never disagree (WYSIWYG parity). Independent of
+	/// `bounds` — valid on an engine that has never laid out.
+	private func layoutReadyString() -> NSAttributedString {
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
 		let fullRange = NSRange(location: 0, length: mutableString.length)
 
@@ -863,7 +1025,7 @@ public class PorticoTextLayoutEngine {
 		// line, so lines stay evenly spaced whether or not they carry ruby (no
 		// デコボコ). Merge it into any caller-supplied paragraph style rather than
 		// overwriting, so alignment / indents / spacing survive.
-		let pitch = rubyLinePitch()
+		let pitch = effectiveLinePitch
 		var styleUpdates: [(NSRange, NSParagraphStyle)] = []
 		mutableString.enumerateAttribute(.paragraphStyle, in: fullRange) { value, range, _ in
 			let style = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
@@ -879,21 +1041,202 @@ public class PorticoTextLayoutEngine {
 			// .verticalGlyphForm allows Core Text to substitute vertical variants of characters if the font supports it.
 			mutableString.addAttribute(.verticalGlyphForm, value: true, range: fullRange)
 		}
-		let stringToLayout: NSAttributedString = mutableString
-		
-		let setter = CTFramesetterCreateWithAttributedString(stringToLayout as CFAttributedString)
-		self.frameSetter = setter
-		
-		let path = CGMutablePath()
-		path.addRect(CGRect(origin: .zero, size: bounds))
-		
-		let frameAttributes: [CFString: Any] = [
-			kCTFrameProgressionAttributeName: orientation == .vertical ? 
-				CTFrameProgression.rightToLeft.rawValue : 
+		return mutableString
+	}
+
+	/// Core Text frame attributes for the current orientation — shared by layout and
+	/// measurement (parity covers the progression, not just the prepared string).
+	private var layoutFrameAttributes: [CFString: Any] {
+		[
+			kCTFrameProgressionAttributeName: orientation == .vertical ?
+				CTFrameProgression.rightToLeft.rawValue :
 				CTFrameProgression.topToBottom.rawValue
 		]
-		
-		self.textFrame = CTFramesetterCreateFrame(setter, CFRangeMake(0, 0), path, frameAttributes as CFDictionary)
+	}
+
+	private func updateLayout() {
+		defer { if !relayingOutForBounds { onNeedsDisplay?() } } // repaint on content relayout (not bounds)
+		strokeTextFrame = nil // stroke pass mirrors the layout; rebuilt lazily on next draw
+		guard bounds.width > 0 && bounds.height > 0 else {
+			self.frameSetter = nil
+			self.textFrame = nil
+			return
+		}
+
+		let setter = CTFramesetterCreateWithAttributedString(layoutReadyString() as CFAttributedString)
+		self.frameSetter = setter
+
+		let path = CGMutablePath()
+		path.addRect(CGRect(origin: .zero, size: bounds))
+
+		self.textFrame = CTFramesetterCreateFrame(setter, CFRangeMake(0, 0), path, layoutFrameAttributes as CFDictionary)
+	}
+
+	/// Measures the content's natural LAYOUT size — the rect to lay out or persist
+	/// (NOT ink extents; ruby overhang and outline live in ink-bounds territory).
+	/// `inlineExtent` is the wrap constraint along the writing direction — width when
+	/// horizontal, height when vertical; nil = unconstrained (manual line breaks
+	/// only). Results are ceiled to integral points. Uses the exact attribute
+	/// pipeline layout uses, so a frame laid out at the returned size shows the full
+	/// string. Independent of current `bounds`; valid on an engine that has never
+	/// laid out. Alignment positions text within a frame and does not change the
+	/// measured size.
+	public func measuredSize(inlineExtent: CGFloat? = nil) -> CGSize {
+		guard attributedString.length > 0 else { return .zero }
+		let setter = CTFramesetterCreateWithAttributedString(layoutReadyString() as CFAttributedString)
+		// Generous-but-finite bound for unconstrained axes: CGFloat.greatestFiniteMagnitude
+		// is known to make CTFramesetterSuggestFrameSizeWithConstraints misbehave.
+		let unbounded: CGFloat = 1_000_000
+		// Non-finite or non-positive constraints are treated as unconstrained.
+		let extent: CGFloat? = inlineExtent.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+		let constraint = orientation == .vertical
+			? CGSize(width: unbounded, height: extent ?? unbounded)
+			: CGSize(width: extent ?? unbounded, height: unbounded)
+		let suggested = CTFramesetterSuggestFrameSizeWithConstraints(
+			setter, CFRangeMake(0, 0), layoutFrameAttributes as CFDictionary, constraint, nil
+		)
+		guard suggested.width > 0 && suggested.height > 0 else { return .zero }
+
+		let fullLength = attributedString.length
+		func probe(_ candidate: CGSize) -> (fits: Bool, lineCount: Int) {
+			let path = CGMutablePath()
+			path.addRect(CGRect(origin: .zero, size: candidate))
+			let frame = CTFramesetterCreateFrame(setter, CFRangeMake(0, 0), path, layoutFrameAttributes as CFDictionary)
+			return (CTFrameGetVisibleStringRange(frame).length == fullLength, CFArrayGetCount(CTFrameGetLines(frame)))
+		}
+		func withBlockExtent(_ size: CGSize, _ block: CGFloat) -> CGSize {
+			orientation == .vertical
+				? CGSize(width: block, height: size.height)
+				: CGSize(width: size.width, height: block)
+		}
+
+		var size = CGSize(width: ceil(suggested.width), height: ceil(suggested.height))
+
+		// SuggestFrameSize is unreliable under the forced uniform line height, in BOTH
+		// directions: it overreports the block axis by a few points (observed), and its
+		// historically reported failure mode is UNDER-reporting. Verified-fit beats
+		// modeled-fit both ways:
+		//
+		// 1. End-verify the suggestion; repair UP if it under-reports (sanity-bounded —
+		//    the debug assert flags the pathological case).
+		var probed = probe(size)
+		if !probed.fits {
+			var attempts = 0
+			var block = orientation == .vertical ? size.width : size.height
+			while !probed.fits && attempts < 32 {
+				block += 4
+				size = withBlockExtent(size, block)
+				probed = probe(size)
+				attempts += 1
+			}
+			assert(probed.fits, "measuredSize: no fitting size within +128pt of the suggestion")
+		}
+
+		// 2. Tighten DOWN: binary-search the smallest fitting block extent between the
+		//    deterministic floor (lineCount × pitch under the uniform pitch) and the
+		//    known-fitting current size — fit is monotone in block extent. Skipped as a
+		//    PERF guard (not correctness; step 1 already guarantees fit) when caller
+		//    block spacing puts the floor uselessly far below the real extent.
+		if probed.fits && probed.lineCount > 0 && !hasBlockSpacingBeyondPitch {
+			let cap = orientation == .vertical ? size.width : size.height
+			let floor = min(cap, ceil(CGFloat(probed.lineCount) * effectiveLinePitch))
+			if probe(withBlockExtent(size, floor)).fits {
+				size = withBlockExtent(size, floor)
+			} else {
+				var lo = floor // known not to fit
+				var hi = cap   // known to fit
+				while hi - lo > 1 {
+					let mid = ((lo + hi) / 2).rounded(.down)
+					if probe(withBlockExtent(size, mid)).fits { hi = mid } else { lo = mid }
+				}
+				size = withBlockExtent(size, hi)
+			}
+		}
+		return size
+	}
+
+	/// Whether any caller paragraph style adds block extent on top of the uniform
+	/// pitch — paragraph spacing between paragraphs, or line spacing between lines
+	/// (Core Text applies `lineSpacing` even with min/max line height clamped).
+	/// A PERF guard for `measuredSize`'s tighten step: with such spacing the
+	/// lineCount × pitch floor sits uselessly far below the real extent and the
+	/// search degenerates. Fit itself is guaranteed by end-verification regardless.
+	private var hasBlockSpacingBeyondPitch: Bool {
+		var found = false
+		attributedString.enumerateAttribute(
+			.paragraphStyle,
+			in: NSRange(location: 0, length: attributedString.length)
+		) { value, _, stop in
+			if let style = value as? NSParagraphStyle,
+			   style.paragraphSpacing > 0 || style.paragraphSpacingBefore > 0 || style.lineSpacing > 0 {
+				found = true
+				stop.pointee = true
+			}
+		}
+		return found
+	}
+
+	/// Test hook (like `lineOrigins()`): how many characters the current layout shows.
+	func visibleStringRangeLength() -> Int {
+		guard let textFrame = textFrame else { return 0 }
+		return CTFrameGetVisibleStringRange(textFrame).length
+	}
+
+	/// Maps a line-local rect (CTLine bounds coordinates: x along the line's advance
+	/// axis from the line origin, y baseline-relative with +y on the ascent side) into
+	/// engine (Core Text bottom-left) space. Orientation-aware: horizontal lines
+	/// advance +x with ascent up; vertical lines advance visually DOWN (engine −y)
+	/// with the ascent side extending toward engine +x — the same mapping
+	/// `selectionRects(for:)` uses.
+	func lineLocalToEngineRect(_ rect: CGRect, lineOrigin origin: CGPoint) -> CGRect {
+		if orientation == .vertical {
+			return CGRect(
+				x: origin.x + rect.minY,
+				y: origin.y - rect.maxX,
+				width: rect.height,
+				height: rect.width
+			)
+		} else {
+			return CGRect(
+				x: origin.x + rect.minX,
+				y: origin.y + rect.minY,
+				width: rect.width,
+				height: rect.height
+			)
+		}
+	}
+
+	/// Union of the laid-out glyphs' GEOMETRIC ink extents (Core Text glyph-path
+	/// bounds), INCLUDING ruby reading glyphs — which overhang the layout rect on
+	/// the ascent side (above the line in horizontal, right of the column in
+	/// vertical). Distinct from the layout `bounds`/`measuredSize` (the rect text
+	/// is framed into). Clients sizing raster tiles or selection chrome should
+	/// start from this rect, not the layout rect — and must still convert to their
+	/// target scale and outset for antialiasing (rasterization bleeds ~1px past
+	/// geometric bounds). Engine (Core Text bottom-left) coordinates. `.null` when
+	/// there is no layout OR no painted glyphs (empty or whitespace/newline-only
+	/// content).
+	public func inkBounds() -> CGRect {
+		guard let textFrame = textFrame else { return .null }
+		let lines = CTFrameGetLines(textFrame) as! [CTLine]
+		guard !lines.isEmpty else { return .null }
+		var origins = [CGPoint](repeating: .zero, count: lines.count)
+		CTFrameGetLineOrigins(textFrame, CFRangeMake(0, 0), &origins)
+
+		var union = CGRect.null
+		for (line, origin) in zip(lines, origins) {
+			let local = CTLineGetBoundsWithOptions(line, [.useGlyphPathBounds])
+			// Empty lines (e.g. "\n\n") yield null/empty glyph bounds — skip, or the
+			// union degrades.
+			guard !local.isNull, !local.isEmpty else { continue }
+			union = union.union(lineLocalToEngineRect(local, lineOrigin: origin))
+		}
+		// The outline's rim extends exactly `width` past the glyph edge (stroke
+		// lineWidth is 2 × width, centered on the path).
+		if !union.isNull, let o = activeOutline {
+			union = union.insetBy(dx: -o.width, dy: -o.width)
+		}
+		return union
 	}
 	
 	private func drawSelection(in context: CGContext) {
@@ -904,9 +1247,36 @@ public class PorticoTextLayoutEngine {
 		}
 	}
 	
-	public func draw(in context: CGContext) {
+	/// The text itself — the one place glyphs hit the context. CoreText natively handles
+	/// vertical layout geometry when progression is rightToLeft and
+	/// kCTVerticalFormsAttributeName is applied. No context rotation needed on macOS!
+	/// When an outline is set, the stroke pass paints first (behind the fill) with a
+	/// round join — the default miter join spikes at sharp glyph corners, exactly the
+	/// manga-fuchi failure mode.
+	private func drawTextCore(in context: CGContext) {
 		guard let textFrame = textFrame else { return }
-		
+		if let strokeFrame = currentStrokeFrame() {
+			context.saveGState()
+			context.setLineJoin(.round)
+			context.setLineCap(.round)
+			CTFrameDraw(strokeFrame, context)
+			context.restoreGState()
+		}
+		CTFrameDraw(textFrame, context)
+	}
+
+	/// The caret, when the engine owns it (see `drawsCaret`). Drawn over the text.
+	private func drawCaret(in context: CGContext) {
+		guard drawsCaret && selectionRange == nil && markedRange == nil else { return }
+		let rect = caretRect(for: cursorIndex)
+		context.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
+		context.fill(rect)
+	}
+
+	/// Editing render: selection highlight under the text, caret over it.
+	public func draw(in context: CGContext) {
+		guard textFrame != nil else { return }
+
 		context.saveGState()
 
 		// Draw selection highlight first so text is drawn over it
@@ -914,18 +1284,22 @@ public class PorticoTextLayoutEngine {
 			drawSelection(in: context)
 		}
 
-		// CoreText natively handles vertical layout geometry when progression is rightToLeft
-		// and kCTVerticalFormsAttributeName is applied. No context rotation needed on macOS!
+		drawTextCore(in: context)
 
-		CTFrameDraw(textFrame, context)
+		drawCaret(in: context)
 
-		// Draw the caret when the engine owns it (see `drawsCaret`).
-		if drawsCaret && selectionRange == nil && markedRange == nil {
-			let rect = caretRect(for: cursorIndex)
-			context.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
-			context.fill(rect)
-		}
+		context.restoreGState()
+	}
 
+	/// Renders the laid-out text only — no selection highlight, no caret. The
+	/// display/raster-export counterpart of `draw(in:)`: use this to paint a committed,
+	/// non-editing document (a canvas element, a thumbnail, a high-DPI export tile);
+	/// output is independent of `cursorIndex`/`selectionRange` state. No layout
+	/// (zero `bounds`) = no-op.
+	public func drawText(in context: CGContext) {
+		guard textFrame != nil else { return }
+		context.saveGState()
+		drawTextCore(in: context)
 		context.restoreGState()
 	}
 }

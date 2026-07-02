@@ -27,6 +27,11 @@ struct ContentView: View {
 	@FocusState private var readingFieldFocused: Bool
 	@State private var canUndo = false
 	@State private var canRedo = false
+	// 0.4.0 manga-lettering surface demo: outline (縁取り), line pitch, live measurement.
+	@State private var outlineEnabled = false
+	@State private var outlineWidth: CGFloat = 2
+	@State private var pitchMultiplier: CGFloat = 1.0
+	@State private var measured: CGSize = .zero
 
 	/// One in-flight ruby edit: the target range and where to anchor the popover.
 	private struct RubyEdit {
@@ -52,6 +57,26 @@ struct ContentView: View {
 					.disabled(!canRedo)
 			}
 
+			// 0.4.0 manga-lettering controls: white 縁取り (visible against the gray canvas
+			// below), line-pitch multiplier, and the live measuredSize readout.
+			HStack(spacing: 12) {
+				Toggle("縁取り", isOn: $outlineEnabled)
+				Slider(value: $outlineWidth, in: 0.5...6) { Text("Edge") }
+					.frame(maxWidth: 140)
+					.disabled(!outlineEnabled)
+					.help("Outline width (points)")
+				Slider(value: $pitchMultiplier, in: 0.5...3) { Text("Pitch") }
+					.frame(maxWidth: 140)
+					.help("Line-pitch multiplier")
+				Spacer()
+				if measured != .zero {
+					Text("fits \(Int(measured.width))×\(Int(measured.height))")
+						.font(.caption.monospacedDigit())
+						.foregroundStyle(.secondary)
+						.help("measuredSize(inlineExtent: nil) — live")
+				}
+			}
+
 			// engine: mode. Select any text → native edit action (Ruby…) → this popover; applying
 			// calls engine.setRuby, which is one undoable step. (Inline notation — typing 漢字《かんじ》
 			// — also works directly in the view. Typing, delete, paste, cut, and ruby are all undoable.)
@@ -60,11 +85,29 @@ struct ContentView: View {
 							beginEditing(range: range, anchor: anchor)
 						})
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
+				.background(Color(white: 0.85)) // shows off the white outline halo
 				.border(Color.gray)
 				.overlay(alignment: .topLeading) { rubyPopover }
 				.ignoresSafeArea(.keyboard, edges: .bottom)
 		}
 		.padding()
+		.onChange(of: outlineEnabled) { _ in applyOutline() }
+		.onChange(of: outlineWidth) { _ in applyOutline() }
+		.onChange(of: pitchMultiplier) { _ in
+			engine.linePitchMultiplier = pitchMultiplier
+			refreshMeasured()
+		}
+		.onChange(of: orientation) { _ in
+			// The view applies the orientation to the engine; the measurement readout
+			// must follow (measured axes swap between H and V).
+			refreshMeasured()
+		}
+		.onAppear {
+			// Client observation seam (distinct from the view's internal repaint slot):
+			// keep the measurement readout live as the user types.
+			engine.textDidChange = { _ in refreshMeasured() }
+			refreshMeasured()
+		}
 		// The engine isn't Observable (by design), but its UndoManager broadcasts state. Refresh the
 		// buttons off the notifications that fire **after the stack settles** — a group closing (a new
 		// step registered), and undo/redo transitions. (Not `.NSUndoManagerCheckpoint`: at group-close
@@ -82,6 +125,16 @@ struct ContentView: View {
 		// default Undo/Redo drive their own environment manager, not ours, so the app replaces them
 		// with commands that drive this engine.
 		.focusedSceneValue(\.porticoEngine, engine)
+	}
+
+	private func applyOutline() {
+		engine.outline = outlineEnabled
+			? PorticoTextOutline(width: outlineWidth, color: CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+			: nil
+	}
+
+	private func refreshMeasured() {
+		measured = engine.measuredSize()
 	}
 
 	private func performUndo() {
