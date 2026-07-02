@@ -29,7 +29,11 @@ public class PorticoTextView: NSView {
 		window?.makeFirstResponder(self)
 		let point = convert(event.locationInWindow, from: nil)
 		let index = layoutEngine.stringIndex(for: point)
-		layoutEngine.beginSelection(at: index)
+		if event.clickCount == 2, let word = layoutEngine.wordRange(at: index) {
+			layoutEngine.setSelectedRange(word) // double-click selects the whole word
+		} else {
+			layoutEngine.beginSelection(at: index)
+		}
 		setNeedsDisplay(bounds)
 	}
 	

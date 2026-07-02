@@ -103,6 +103,26 @@ public class PorticoTextLayoutEngine {
 		}
 	}
 	
+	/// The word range containing `index` (system word segmentation, including Japanese kanji /
+	/// kana boundaries), or nil if `index` isn't within a word (e.g. whitespace/punctuation).
+	/// Backs double-click word selection.
+	public func wordRange(at index: Int) -> NSRange? {
+		let ns = attributedString.string as NSString
+		guard ns.length > 0 else { return nil }
+		let probe = max(0, min(index, ns.length - 1))
+		var result: NSRange?
+		ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length),
+							   options: [.byWords, .substringNotRequired]) { _, wordRange, _, stop in
+			if NSLocationInRange(probe, wordRange) {
+				result = wordRange
+				stop.pointee = true
+			} else if wordRange.location > probe {
+				stop.pointee = true // enumeration is in order; past the probe, so no word contains it
+			}
+		}
+		return result
+	}
+
 	public func setMarkedText(_ text: String, selectedRange: NSRange, replacementRange: NSRange?) {
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
 

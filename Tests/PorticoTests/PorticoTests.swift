@@ -108,3 +108,21 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 	#expect(e.attributedString.string == "a") // whole é removed, not just the accent
 	#expect(e.cursorIndex == 1)
 }
+
+// MARK: - Word range (double-click selection)
+
+@Test func wordRangeSelectsLatinWord() {
+	let e = engine("Hello world")
+	#expect(e.wordRange(at: 7) == NSRange(location: 6, length: 5)) // "world"
+	#expect(e.wordRange(at: 2) == NSRange(location: 0, length: 5)) // "Hello"
+}
+
+@Test func wordRangeSegmentsJapanese() {
+	let e = engine("吾輩は猫である")
+	let r = e.wordRange(at: 0)
+	#expect(r != nil && r!.length > 0 && NSLocationInRange(0, r!)) // a non-empty word containing 吾
+}
+
+@Test func wordRangeNilOnEmpty() {
+	#expect(engine("").wordRange(at: 0) == nil)
+}
