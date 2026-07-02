@@ -2,6 +2,12 @@
 
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
+## [Unreleased]
+### Fixed
+- iOS: the client's selection-menu action (e.g. "Ruby…") was buried below the fold on the long
+  edit menu once the clipboard actions filled `suggestedActions`. It's now placed first, in its
+  own inline group, so it stays visible.
+
 ## [0.2.1]
 ### Fixed
 - iOS: after Cut / Delete / Paste (and backspace or typing over a selection), the native

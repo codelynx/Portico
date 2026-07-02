@@ -410,9 +410,11 @@ public class PorticoTextView: UIView, UITextInput {
 
 	// MARK: - Selection edit menu (design §7.2 seam)
 
-	/// Augment the native selection menu with the client's action (iOS 16+). Returning
-	/// `suggestedActions + [ours]` keeps Copy / Look Up / … and appends our item; this is the
-	/// hook `UITextInteraction` already calls, so we never install a competing menu interaction.
+	/// Augment the native selection menu with the client's action (iOS 16+). This is the hook
+	/// `UITextInteraction` already calls, so we never install a competing menu interaction.
+	/// Our action goes **first**, in its own inline group: since we implement the clipboard
+	/// actions, `suggestedActions` is now the full Cut/Copy/Paste/Look Up/Translate/… list, and
+	/// appending our item would bury it below the fold on the long iOS edit menu.
 	public func editMenu(for textRange: UITextRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
 		guard let action = onSelectionMenuAction,
 			  let selection = layoutEngine.selectionRange, selection.length > 0 else {
@@ -424,7 +426,8 @@ public class PorticoTextView: UIView, UITextInput {
 				  let anchor = self.layoutEngine.anchorRectForSelection() else { return }
 			action.handler(sel, anchor)
 		}
-		return UIMenu(children: suggestedActions + [item])
+		let ours = UIMenu(title: "", options: .displayInline, children: [item])
+		return UIMenu(children: [ours] + suggestedActions)
 	}
 
 	// MARK: - UITextInput
