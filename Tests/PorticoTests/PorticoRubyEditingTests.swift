@@ -72,6 +72,65 @@ private func editEngine(_ notation: String) -> PorticoTextLayoutEngine {
 	#expect(!hasRuby(e.attributedString, at: 2))
 }
 
+// MARK: - §6 post-edit normalization: ruby survives edits and round-trips
+
+/// The buffer must serialize → parse back to the same text + ruby-group semantics (§9).
+private func roundTrips(_ engine: PorticoTextLayoutEngine) -> Bool {
+	let s = engine.attributedString
+	let reparsed = PorticoRuby.parse(PorticoRuby.serialize(s))
+	guard reparsed.string == s.string else { return false }
+	let a = PorticoRuby.rubyGroups(in: NSRange(location: 0, length: s.length), of: s)
+	let b = PorticoRuby.rubyGroups(in: NSRange(location: 0, length: reparsed.length), of: reparsed)
+	return a.map { "\($0.base)=\($0.reading)" } == b.map { "\($0.base)=\($0.reading)" }
+}
+
+@Test func deleteInsideBaseKeepsContiguousRubyAndRoundTrips() {
+	let e = editEngine("｜漢字学《かんじがく》") // base [0,3)
+	#expect(e.attributedString.string == "漢字学")
+	e.cursorIndex = 2
+	e.deleteBackward() // delete 字 (interior)
+	#expect(e.attributedString.string == "漢学")
+	#expect(hasRuby(e.attributedString, at: 0) && hasRuby(e.attributedString, at: 1))
+	#expect(roundTrips(e))
+}
+
+@Test func deleteEntireBaseDropsGroupAndRoundTrips() {
+	let e = editEngine("漢字《かんじ》の本") // "漢字の本", ruby [0,2)
+	e.selectionRange = NSRange(location: 0, length: 2)
+	e.deleteBackward()
+	#expect(e.attributedString.string == "の本")
+	#expect(PorticoRuby.rubyGroups(in: NSRange(location: 0, length: e.attributedString.length), of: e.attributedString).isEmpty)
+	#expect(roundTrips(e))
+}
+
+@Test func deleteAcrossGroupBoundaryRoundTrips() {
+	let e = editEngine("東京《とうきょう》都") // "東京都", ruby [0,2)
+	e.selectionRange = NSRange(location: 1, length: 2) // 京都 (part of base + 都)
+	e.deleteBackward()
+	#expect(e.attributedString.string == "東")
+	#expect(hasRuby(e.attributedString, at: 0)) // surviving 東 keeps ruby
+	#expect(roundTrips(e))
+}
+
+@Test func adjacentGroupsAfterDeleteStaySeparateAndRoundTrip() {
+	let e = editEngine("春《はる》と秋《あき》") // "春と秋", [0,1)=はる [2,3)=あき
+	e.selectionRange = NSRange(location: 1, length: 1) // delete と
+	e.deleteBackward()
+	#expect(e.attributedString.string == "春秋")
+	let groups = PorticoRuby.rubyGroups(in: NSRange(location: 0, length: e.attributedString.length), of: e.attributedString)
+	#expect(groups.count == 2) // must NOT merge into one group
+	#expect(roundTrips(e))
+}
+
+@Test func insertInsideBaseExtendsAndRoundTrips() {
+	let e = editEngine("漢字《かんじ》")
+	e.cursorIndex = 1
+	e.insertText("々") // extends group to [0,3)
+	#expect(e.attributedString.string == "漢々字")
+	#expect(hasRuby(e.attributedString, at: 0) && hasRuby(e.attributedString, at: 1) && hasRuby(e.attributedString, at: 2))
+	#expect(roundTrips(e))
+}
+
 // MARK: - §5 editing primitives: setRuby / rubyGroup / rubyGroups
 
 private func mutable(_ notation: String) -> NSMutableAttributedString {
@@ -167,4 +226,29 @@ private func mutable(_ notation: String) -> NSMutableAttributedString {
 	let a = PorticoRuby.rubyGroups(in: NSRange(location: 0, length: s.length), of: s)
 	let b = PorticoRuby.rubyGroups(in: NSRange(location: 0, length: reparsed.length), of: reparsed)
 	#expect(a.map { "\($0.base)=\($0.reading)" } == b.map { "\($0.base)=\($0.reading)" })
+}
+
+@Test func adjacentSameReadingGroupsStaySeparateAfterDelete() {
+	// Two DIFFERENT groups with the SAME reading, made adjacent by a delete, must NOT merge —
+	// CTRubyAnnotation instances are distinct objects, so the store keeps them as two runs.
+	let e = editEngine("木《き》と気《き》") // 木=き, 気=き
+	e.selectionRange = NSRange(location: 1, length: 1) // delete と
+	e.deleteBackward()
+	#expect(e.attributedString.string == "木気")
+	let groups = PorticoRuby.rubyGroups(in: NSRange(location: 0, length: e.attributedString.length), of: e.attributedString)
+	#expect(groups.count == 2) // not merged into one き group
+	#expect(roundTrips(e))
+}
+
+@Test func replacingSelectionSpanningGroupsRoundTrips() {
+	// Type over a selection straddling two groups: inserted text is plain (boundary rule),
+	// the flanking groups shrink to their survivors, and the result still round-trips.
+	let e = editEngine("東京《とうきょう》大学《だいがく》") // 東京[0,2) 大学[2,4)
+	e.selectionRange = NSRange(location: 1, length: 2) // 京大
+	e.insertText("X")
+	#expect(e.attributedString.string == "東X学")
+	#expect(hasRuby(e.attributedString, at: 0))  // 東 survivor of first group
+	#expect(!hasRuby(e.attributedString, at: 1)) // X plain
+	#expect(hasRuby(e.attributedString, at: 2))  // 学 survivor of second group
+	#expect(roundTrips(e))
 }

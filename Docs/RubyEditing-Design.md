@@ -102,9 +102,15 @@ unit-testable), rather than a new stateful subsystem.
 - **Partial-base selection: allowed, no snapping.** Selection is plain text selection.
   Expose a group-boundary query so clients can implement snap-on-double-tap *themselves* if
   they want it — Portico doesn't force it.
-- **Post-edit normalization.** Because `NSMutableAttributedString` edits can split/truncate
-  the annotation range, the engine runs a normalization pass after edits: coalesce/re-anchor
-  ruby to its surviving contiguous base and drop empties, preserving the §3 invariant.
+- **Post-edit integrity — handled by the attribute store (verified).** We expected to need a
+  normalization pass, but `NSMutableAttributedString` already does the right thing: it
+  re-anchors a group's `CTRubyAnnotation` to its surviving contiguous base on delete, extends
+  it on an interior insert, and drops it when the base is emptied. And because each group is a
+  **distinct** annotation object, adjacent groups (even same-reading) never coalesce. So **no
+  explicit normalization pass is required** for the §3 invariant — the guarantee is enforced by
+  edit-scenario **round-trip tests** (delete inside / whole / across-boundary, adjacent groups
+  incl. same-reading, interior insert, replace-over-multi-group). A reading can still go
+  semantically stale after a base edit — the author's problem, not a structural break.
 
 ## 7. Authoring UX (Q2) — two supported paths, one deferred
 
@@ -178,7 +184,8 @@ undefined.)
 
 1. **Fix the insertion/inheritance boundary rule** (§6) — isolated, correct regardless.
 2. **Primitives** — `setRuby` + `rubyGroup(at:)` / `rubyGroups(in:)` + tests (pure, no UI).
-3. **Post-edit normalization pass** (§6) — the real engine work; the round-trip tests gate it.
+3. **Post-edit integrity** (§6) — turned out the attribute store already preserves the
+   invariant under edits, so no explicit normalization pass is needed; locked by round-trip tests.
 4. **Geometry primitives** — `rubyGroup(at point:)`, `rects(forRubyGroupContaining:)`,
    `anchorRect(forRubyGroupContaining:)`.
 5. **Inline notation conversion** (§7a) with the committed-text/undo contract.
