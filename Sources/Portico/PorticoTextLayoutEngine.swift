@@ -431,6 +431,34 @@ public class PorticoTextLayoutEngine {
 		return rects
 	}
 
+	// MARK: - Ruby geometry (Phase 3, step 4)
+	// Layout (Core Text, bottom-left) coordinates — platform view wrappers flip to view
+	// coordinates, as with `caretRect` / `selectionRects`. These let a client build tap /
+	// popover ruby editing (design §5). Rects cover the group's **base** glyphs; the reading
+	// renders within the line's ascent above/beside the base.
+
+	/// Per-line base rects of the ruby group containing `index`, or `[]` if `index` isn't in a
+	/// group. One rect per line the base spans.
+	public func rects(forRubyGroupContaining index: Int) -> [CGRect] {
+		guard let group = PorticoRuby.rubyGroup(at: index, in: attributedString) else { return [] }
+		return selectionRects(for: group.base)
+	}
+
+	/// A single rect enclosing the ruby group containing `index` — the union of its per-line
+	/// base rects — suitable for anchoring a popover. `.null` if `index` isn't in a group.
+	public func anchorRect(forRubyGroupContaining index: Int) -> CGRect {
+		let groupRects = rects(forRubyGroupContaining: index)
+		guard let first = groupRects.first else { return .null }
+		return groupRects.dropFirst().reduce(first) { $0.union($1) }
+	}
+
+	/// The ruby group at `point` (layout coordinates), or nil. Resolves the base character
+	/// under the point; taps on the reading glyphs are approximate (they resolve via the
+	/// nearest base character, since Core Text doesn't fully contain the ruby ascent).
+	public func rubyGroup(at point: CGPoint) -> (base: NSRange, reading: String)? {
+		PorticoRuby.rubyGroup(at: stringIndex(for: point), in: attributedString)
+	}
+
 	/// Natural height of a line that carries one row of ruby, measured from a real
 	/// CTLine using the string's own base attributes. Self-calibrating: it reflects
 	/// the font Core Text actually uses (including CJK fallbacks) and the real ruby

@@ -293,3 +293,38 @@ private func mutable(_ notation: String) -> NSMutableAttributedString {
 	#expect(hasRuby(e.attributedString, at: 2))  // 学 survivor of second group
 	#expect(roundTrips(e))
 }
+
+// MARK: - Step 4: ruby geometry primitives
+
+@Test func rubyRectsMatchBaseSelectionRects() {
+	let e = editEngine("漢字《かんじ》") // base [0,2)
+	let rects = e.rects(forRubyGroupContaining: 0)
+	#expect(!rects.isEmpty)
+	#expect(rects.allSatisfy { $0.width > 0 && $0.height > 0 })
+	#expect(rects == e.selectionRects(for: NSRange(location: 0, length: 2))) // same base geometry
+}
+
+@Test func rubyGeometryEmptyOffGroup() {
+	let e = editEngine("漢字《かんじ》の") // "漢字の", ruby [0,2); の plain
+	#expect(e.rects(forRubyGroupContaining: 2).isEmpty)
+	#expect(e.anchorRect(forRubyGroupContaining: 2) == .null)
+}
+
+@Test func anchorRectEnclosesGroupRects() {
+	let e = editEngine("漢字《かんじ》")
+	let anchor = e.anchorRect(forRubyGroupContaining: 1)
+	#expect(anchor != .null)
+	for r in e.rects(forRubyGroupContaining: 1) {
+		#expect(anchor.union(r) == anchor) // the anchor contains every base rect
+	}
+}
+
+@Test func rubyGroupAtPointResolvesBaseTap() {
+	let e = editEngine("a漢字《かんじ》") // "a漢字", ruby [1,3)
+	let kanRect = e.rect(forCharacterRange: NSRange(location: 1, length: 1)) // 漢, inside the base
+	let g = e.rubyGroup(at: CGPoint(x: kanRect.midX, y: kanRect.midY))
+	#expect(g?.base == NSRange(location: 1, length: 2))
+	#expect(g?.reading == "かんじ")
+	// A point past the text resolves to no group.
+	#expect(e.rubyGroup(at: CGPoint(x: 100000, y: kanRect.midY)) == nil)
+}
