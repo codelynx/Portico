@@ -158,6 +158,79 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 	#expect(e.cursorIndex == 3)
 }
 
+// MARK: - Undo / Redo (Phase 1: engine core — coalesced typing + discrete delete)
+
+@Test func typingRunUndoesAndRedoesAsOneStep() {
+	let e = engine("")
+	e.insertText("a"); e.insertText("b"); e.insertText("c")
+	#expect(e.attributedString.string == "abc")
+	e.undoManager.undo()
+	#expect(e.attributedString.string == "")   // the whole coalesced run reverts in one undo
+	e.undoManager.redo()
+	#expect(e.attributedString.string == "abc")
+}
+
+@Test func caretMoveBreaksTypingIntoSeparateUndoSteps() {
+	let e = engine("")
+	e.insertText("ab")             // run 1
+	e.moveCursor(direction: .left) // caret move ends the run
+	e.insertText("X")              // run 2 → "aXb"
+	#expect(e.attributedString.string == "aXb")
+	e.undoManager.undo()
+	#expect(e.attributedString.string == "ab")  // only run 2 undone
+	e.undoManager.undo()
+	#expect(e.attributedString.string == "")    // run 1 undone separately
+}
+
+@Test func deleteIsADiscreteUndoStep() {
+	let e = engine("abc") // cursor at end
+	e.deleteBackward()
+	#expect(e.attributedString.string == "ab")
+	e.undoManager.undo()
+	#expect(e.attributedString.string == "abc")
+}
+
+@Test func undoRestoresSelectionAndCaret() {
+	let e = engine("hello world")
+	e.setSelectedRange(NSRange(location: 0, length: 5)) // select "hello"
+	e.insertText("Hi")                                  // replace → "Hi world"
+	#expect(e.attributedString.string == "Hi world")
+	e.undoManager.undo()
+	#expect(e.attributedString.string == "hello world")
+	#expect(e.selectionRange == NSRange(location: 0, length: 5)) // selection restored, not just text
+}
+
+@Test func usesInjectedUndoManager() {
+	let m = UndoManager(); m.groupsByEvent = false
+	let e = PorticoTextLayoutEngine(attributedString: NSAttributedString(string: ""),
+									bounds: CGSize(width: 200, height: 200), undoManager: m)
+	#expect(e.undoManager === m)
+	e.insertText("x")
+	#expect(m.canUndo)
+	m.undo()
+	#expect(e.attributedString.string == "")
+}
+
+@Test func externalReplacementClearsUndoStack() {
+	let e = engine("")
+	e.insertText("abc")
+	#expect(e.undoManager.canUndo)
+	e.update(attributedString: NSAttributedString(string: "loaded document")) // document reset
+	#expect(!e.undoManager.canUndo) // only Portico's actions were cleared (target-scoped)
+}
+
+@Test func engineDeallocatesDespiteUndoRegistrations() {
+	// Retain-cycle contract: the manager holds the engine unowned and the handler captures only
+	// the snapshot, so registering undo must not keep the engine alive.
+	weak var weakEngine: PorticoTextLayoutEngine?
+	autoreleasepool {
+		let e = engine("")
+		e.insertText("abc") // registers an undo targeting the engine
+		weakEngine = e
+	}
+	#expect(weakEngine == nil)
+}
+
 // MARK: - selectionRange normalization + zero-length targeting (backs iOS replace)
 
 @Test func selectionRangeCollapsesZeroLengthToNil() {

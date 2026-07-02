@@ -21,7 +21,11 @@ let package = Package(
 		),
 		.testTarget(
 			name: "PorticoTests",
-			dependencies: ["Portico"]
+			dependencies: ["Portico"],
+			// PorticoTextLayoutEngine is @MainActor (it owns a Foundation UndoManager, which is
+			// main-actor-isolated). Default the tests to the main actor so they can drive the engine
+			// synchronously without a @MainActor annotation on every test.
+			swiftSettings: [.defaultIsolation(MainActor.self)]
 		),
 	]
 )

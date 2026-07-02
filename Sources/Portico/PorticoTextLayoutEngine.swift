@@ -12,6 +12,7 @@ public enum PorticoLayoutOrientation {
 	case vertical
 }
 
+@MainActor
 public class PorticoTextLayoutEngine {
 	public var attributedString: NSAttributedString
 	public var orientation: PorticoLayoutOrientation
@@ -43,19 +44,101 @@ public class PorticoTextLayoutEngine {
 	public var drawsCaret: Bool { drawsSelectionHighlight || orientation == .vertical }
 	private var selectionAnchorIndex: Int?
 	public var textDidChange: ((NSAttributedString) -> Void)?
-	
+
+	/// The undo stack for this engine's edits (see Docs/UndoRedo-Design.md). Undo is **model-scoped**:
+	/// it lives with the engine, not the view, so it's independent per engine and survives view
+	/// teardown while the client retains the engine. A per-platform view vends this via its
+	/// `undoManager` override, so ⌘Z / Edit ▸ Undo / shake drive it. Defaults to a private manager
+	/// (bounded via `levelsOfUndo`); a host document app can inject its own to compose undo.
+	public let undoManager: UndoManager
+	/// True while a run of plain typing is being coalesced into a single undo step. Reset by any
+	/// break (caret/selection move, delete, marked text, external replacement, or a restore).
+	private var typingRunOpen = false
+
 	private var frameSetter: CTFramesetter?
 	private var textFrame: CTFrame?
-	
-	public init(attributedString: NSAttributedString, orientation: PorticoLayoutOrientation = .horizontal, bounds: CGSize = .zero) {
+
+	public init(attributedString: NSAttributedString, orientation: PorticoLayoutOrientation = .horizontal, bounds: CGSize = .zero, undoManager: UndoManager? = nil) {
 		self.attributedString = attributedString
 		self.orientation = orientation
 		self.bounds = bounds
+		if let undoManager {
+			self.undoManager = undoManager
+		} else {
+			let m = UndoManager()
+			m.levelsOfUndo = 100 // bound memory: snapshots × unlimited would grow without end
+			m.groupsByEvent = false // we group each edit step explicitly, not by run-loop cycle
+			self.undoManager = m
+		}
 		self.cursorIndex = attributedString.length
 		updateLayout()
 	}
-	
+
+	// MARK: - Undo / Redo (snapshot per step; see Docs/UndoRedo-Design.md)
+
+	/// A restorable edit state. Restoring it reproduces the text and caret/selection exactly.
+	private struct EditSnapshot {
+		let attributedString: NSAttributedString
+		let cursorIndex: Int
+		let selectionRange: NSRange?
+	}
+
+	private func currentSnapshot() -> EditSnapshot {
+		EditSnapshot(attributedString: attributedString, cursorIndex: cursorIndex, selectionRange: selectionRange)
+	}
+
+	/// Restore a snapshot without going through the edit paths (so it doesn't re-register undo or
+	/// clear the stack). Not `update(attributedString:)` — that's the document-reset path.
+	private func restore(_ snapshot: EditSnapshot) {
+		typingRunOpen = false
+		attributedString = snapshot.attributedString
+		cursorIndex = snapshot.cursorIndex
+		markedRange = nil
+		selectionAnchorIndex = nil
+		updateLayout()
+		selectionRange = snapshot.selectionRange // didSet fires selectionDidChange
+		textDidChange?(attributedString)
+	}
+
+	/// Register an undo that restores `before`. Target-based with the engine held **unowned** by the
+	/// manager (Foundation doesn't retain undo targets) and the handler capturing only the snapshot
+	/// — so there's no `engine → manager → handler → engine` retain cycle. On undo it captures the
+	/// current state as the redo and re-registers, giving working redo.
+	private func registerUndo(restoring before: EditSnapshot) {
+		undoManager.registerUndo(withTarget: self) { engine in
+			let redo = engine.currentSnapshot()
+			engine.restore(before)
+			engine.registerUndo(restoring: redo)
+		}
+	}
+
+	/// Register one undo group restoring `before`. Grouped explicitly (the manager is
+	/// `groupsByEvent = false`) so each step is a self-contained undo, independent of run-loop timing.
+	private func registerUndoStep(restoring before: EditSnapshot) {
+		undoManager.beginUndoGrouping()
+		registerUndo(restoring: before)
+		undoManager.endUndoGrouping()
+	}
+
+	/// Capture the pre-edit state for a **discrete** (non-coalesced) step. Call before mutating.
+	private func beginUndoStep() {
+		typingRunOpen = false
+		registerUndoStep(restoring: currentSnapshot())
+	}
+
+	/// Capture the pre-edit state only at the **start** of a typing run; subsequent keystrokes in
+	/// the run register nothing, so one undo reverts the whole run. Call before mutating.
+	private func beginCoalescedTypingStep() {
+		guard !typingRunOpen else { return }
+		registerUndoStep(restoring: currentSnapshot())
+		typingRunOpen = true
+	}
+
 	public func update(attributedString: NSAttributedString) {
+		// External replacement = document reset: clear only *our* registered actions (never the
+		// whole manager — a host-injected one owns the app's history too), and end any typing run.
+		undoManager.removeAllActions(withTarget: self)
+		typingRunOpen = false
 		self.attributedString = attributedString
 		clampEditStateToBounds()
 		updateLayout()
@@ -101,12 +184,14 @@ public class PorticoTextLayoutEngine {
 	}
 	
 	public func beginSelection(at index: Int) {
+		typingRunOpen = false // a caret/selection change ends a coalesced typing run
 		cursorIndex = index
 		selectionAnchorIndex = index
 		selectionRange = nil
 	}
-	
+
 	public func updateSelection(to index: Int) {
+		typingRunOpen = false
 		cursorIndex = index
 		if let anchor = selectionAnchorIndex {
 			if anchor == index {
@@ -124,6 +209,7 @@ public class PorticoTextLayoutEngine {
 	/// the right end instead of a nil/stale anchor. A zero-length range collapses to a
 	/// caret; otherwise the anchor is the range start and the cursor its end.
 	public func setSelectedRange(_ range: NSRange) {
+		typingRunOpen = false
 		if range.length == 0 {
 			cursorIndex = range.location
 			selectionRange = nil
@@ -156,6 +242,7 @@ public class PorticoTextLayoutEngine {
 	}
 
 	public func setMarkedText(_ text: String, selectedRange: NSRange, replacementRange: NSRange?) {
+		typingRunOpen = false // IME composition boundary breaks a typing run; no undo step while marked
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
 
 		let targetRange: NSRange
@@ -254,8 +341,9 @@ public class PorticoTextLayoutEngine {
 	}
 	
 	public func moveCursor(direction: MoveDirection, modifySelection: Bool = false) {
+		typingRunOpen = false // moving the caret ends a coalesced typing run
 		let target = targetIndex(for: direction)
-		
+
 		if modifySelection {
 			if selectionRange == nil {
 				beginSelection(at: cursorIndex)
@@ -282,6 +370,7 @@ public class PorticoTextLayoutEngine {
 	}
 
 	public func insertText(_ text: String) {
+		beginCoalescedTypingStep() // one undo per typing run (snapshot captured before the first key)
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
 
 		let targetRange: NSRange
@@ -378,8 +467,12 @@ public class PorticoTextLayoutEngine {
 	}
 	
 	public func deleteBackward() {
+		// A delete is a discrete undo step (never coalesced into a typing run). Register only if
+		// something will actually be deleted, so a no-op backspace doesn't push an empty undo.
+		guard selectionRange != nil || cursorIndex > 0 else { return }
+		beginUndoStep()
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
-		
+
 		if let range = selectionRange {
 			mutableString.deleteCharacters(in: range)
 			self.cursorIndex = range.location
