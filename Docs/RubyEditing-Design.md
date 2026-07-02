@@ -113,11 +113,10 @@ unit-testable), rather than a new stateful subsystem.
   same-reading, interior insert, replace-over-multi-group, newline-merge) are the guard that would
   catch any OS regression. A reading can still go semantically stale after a base edit — the
   author's problem, not a structural break.
-- **Known limitation (deferred fix, not ruby-specific): `deleteBackward` is UTF-16-unit based,**
-  not grapheme-cluster based, so a base containing a surrogate-pair CJK-extension character, emoji,
-  or combining sequence can be split into an invalid string. Fix is small
-  (`rangeOfComposedCharacterSequence(at:)`) and deserves its own tiny engine packet outside the
-  ruby phase.
+- **`deleteBackward` deletes whole grapheme clusters** (via `rangeOfComposedCharacterSequence`),
+  so a base containing a surrogate-pair CJK-extension character, emoji, or combining sequence
+  deletes as one unit rather than splitting into an invalid string. (Previously a single-UTF-16-unit
+  deletion; fixed as its own small non-ruby engine packet.)
 
 ## 7. Authoring UX (Q2) — two supported paths, one deferred
 

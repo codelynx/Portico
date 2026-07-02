@@ -90,3 +90,21 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 		#expect(r.minY >= 0, "caret at line-start idx \(s) spills below bounds: \(r)")
 	}
 }
+
+// MARK: - Grapheme-aware deleteBackward (non-BMP / combining sequences)
+
+@Test func deleteBackwardRemovesWholeSurrogatePair() {
+	let e = engine("a𩸽") // 𩸽 = U+29E3D, a surrogate pair (2 UTF-16 units) at [1,3)
+	e.cursorIndex = 3
+	e.deleteBackward()
+	#expect(e.attributedString.string == "a") // whole character removed, not a lone surrogate
+	#expect(e.cursorIndex == 1)
+}
+
+@Test func deleteBackwardRemovesWholeCombiningSequence() {
+	let e = engine("ae\u{0301}") // "aé" — e + combining acute (one grapheme, 2 units)
+	e.cursorIndex = 3
+	e.deleteBackward()
+	#expect(e.attributedString.string == "a") // whole é removed, not just the accent
+	#expect(e.cursorIndex == 1)
+}

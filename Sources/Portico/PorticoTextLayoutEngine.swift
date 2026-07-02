@@ -285,9 +285,12 @@ public class PorticoTextLayoutEngine {
 			self.selectionRange = nil
 		} else {
 			guard cursorIndex > 0 else { return }
-			let range = NSRange(location: cursorIndex - 1, length: 1)
+			// Delete a whole composed character sequence (grapheme cluster), not one UTF-16
+			// unit — otherwise a surrogate-pair character (emoji, CJK-ext) or a combining
+			// sequence would be split into an invalid string.
+			let range = (mutableString.string as NSString).rangeOfComposedCharacterSequence(at: cursorIndex - 1)
 			mutableString.deleteCharacters(in: range)
-			self.cursorIndex -= 1
+			self.cursorIndex = range.location
 		}
 		
 		self.attributedString = mutableString
