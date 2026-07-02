@@ -116,7 +116,7 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 	// macOS has no automatic clipboard for NSTextInputClient (unlike iOS's UITextInteraction), so
 	// Cut/Copy/Paste/Delete/Select All are implemented here as responder actions. This also lights
 	// up the app's Edit menu and ⌘X/⌘C/⌘V/⌘A (all routed through the responder chain to this first
-	// responder). Undo/Redo still needs an UndoManager wired to the engine — deferred.
+	// responder). Undo/Redo is vended from the engine's UndoManager — see the `undoManager` override.
 
 	/// Right-click shows the standard editing items, plus the client's selection action (e.g.
 	/// Ruby…) when a selection exists and the seam is set.

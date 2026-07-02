@@ -6,19 +6,27 @@
 //
 
 import SwiftUI
+import Combine
 import Portico
 
 struct ContentView: View {
-	@State private var text = PorticoRuby.parse("""
+	// The client owns the engine → **model-scoped undo**: history survives view teardown, and ⌘Z /
+	// Edit ▸ Undo / shake / the buttons below all drive it. Ruby edits go through engine.setRuby
+	// (undoable) instead of replacing the whole document. (A real app should hold the engine in a
+	// view model / ancestor `@StateObject`-style holder rather than a leaf `@State`; here it's fine —
+	// ContentView is the root and rarely re-inits.)
+	@State private var engine = PorticoTextLayoutEngine(attributedString: PorticoRuby.parse("""
 		吾輩《わがはい》は猫《ねこ》である。名前《なまえ》はまだ無《な》い。
 		どこで生《う》れたかとんと見当《けんとう》がつかぬ。何《なに》でも薄暗《うすぐら》いじめじめした所《ところ》でニャーニャー泣《な》いていた事《こと》だけは記憶《きおく》している。吾輩はここで始《はじ》めて人間《にんげん》というものを見た。
 
 		I am a cat. As yet I have no name. I have not the faintest idea where I was born. All I remember is that I was mewing in a damp, gloomy place — and it was there, for the first time, that I set eyes on a human being.
-		""")
+		"""))
 	@State private var orientation: PorticoLayoutOrientation = .horizontal
 	@State private var editing: RubyEdit?
 	@State private var reading: String = ""
 	@FocusState private var readingFieldFocused: Bool
+	@State private var canUndo = false
+	@State private var canRedo = false
 
 	/// One in-flight ruby edit: the target range and where to anchor the popover.
 	private struct RubyEdit {
@@ -28,18 +36,26 @@ struct ContentView: View {
 
 	var body: some View {
 		VStack(spacing: 12) {
-			Picker("Orientation", selection: $orientation) {
-				Text("Horizontal").tag(PorticoLayoutOrientation.horizontal)
-				Text("Vertical").tag(PorticoLayoutOrientation.vertical)
+			HStack(spacing: 12) {
+				Picker("Orientation", selection: $orientation) {
+					Text("Horizontal").tag(PorticoLayoutOrientation.horizontal)
+					Text("Vertical").tag(PorticoLayoutOrientation.vertical)
+				}
+				.pickerStyle(.segmented)
+				.frame(maxWidth: 300)
+				Spacer()
+				Button { performUndo() } label: { Image(systemName: "arrow.uturn.backward") }
+					.help("Undo (also ⌘Z)")
+					.disabled(!canUndo)
+				Button { performRedo() } label: { Image(systemName: "arrow.uturn.forward") }
+					.help("Redo")
+					.disabled(!canRedo)
 			}
-			.pickerStyle(.segmented)
-			.frame(maxWidth: 300)
 
-			// One flow (design §7.2): select any text → native edit action (Ruby…) → this popover.
-			// The framework provides the menu item via the onSelectionMenuAction seam and hands
-			// back the selection range + first-segment anchor; the popover UI is ours.
-			// (Inline notation — typing 漢字《かんじ》 — also works directly in the view.)
-			PorticoView(text: $text, orientation: orientation,
+			// engine: mode. Select any text → native edit action (Ruby…) → this popover; applying
+			// calls engine.setRuby, which is one undoable step. (Inline notation — typing 漢字《かんじ》
+			// — also works directly in the view. Typing, delete, paste, cut, and ruby are all undoable.)
+			PorticoView(engine: engine, orientation: orientation,
 						onSelectionMenuAction: PorticoSelectionMenuAction(title: "Ruby…") { range, anchor in
 							beginEditing(range: range, anchor: anchor)
 						})
@@ -49,6 +65,42 @@ struct ContentView: View {
 				.ignoresSafeArea(.keyboard, edges: .bottom)
 		}
 		.padding()
+		// The engine isn't Observable (by design), but its UndoManager broadcasts state. Refresh the
+		// buttons off the notifications that fire **after the stack settles** — a group closing (a new
+		// step registered), and undo/redo transitions. (Not `.NSUndoManagerCheckpoint`: at group-close
+		// it can fire before the group lands on the stack, so `canUndo` reads a step stale — the "Undo
+		// greyed out right after an edit" symptom.) This is the pattern a client uses to reflect
+		// canUndo/canRedo without any engine API.
+		.onReceive(Publishers.MergeMany([
+			NotificationCenter.default.publisher(for: .NSUndoManagerDidCloseUndoGroup, object: engine.undoManager),
+			NotificationCenter.default.publisher(for: .NSUndoManagerDidUndoChange, object: engine.undoManager),
+			NotificationCenter.default.publisher(for: .NSUndoManagerDidRedoChange, object: engine.undoManager),
+		])) { _ in
+			refreshUndoState()
+		}
+		// Bridge the engine up to the app's Edit ▸ Undo/Redo commands (see ExampleApp): SwiftUI's
+		// default Undo/Redo drive their own environment manager, not ours, so the app replaces them
+		// with commands that drive this engine.
+		.focusedSceneValue(\.porticoEngine, engine)
+	}
+
+	private func performUndo() {
+		guard engine.markedRange == nil else { return } // don't undo mid-composition (matches the framework's own gate)
+		editing = nil                                    // drop any open popover — undo may invalidate its range
+		engine.undoManager.undo()
+		refreshUndoState()
+	}
+
+	private func performRedo() {
+		guard engine.markedRange == nil else { return }
+		editing = nil
+		engine.undoManager.redo()
+		refreshUndoState()
+	}
+
+	private func refreshUndoState() {
+		canUndo = engine.undoManager.canUndo
+		canRedo = engine.undoManager.canRedo
 	}
 
 	/// A floating editor anchored to the selection. Prefers to sit below the anchor but flips
@@ -95,8 +147,7 @@ struct ContentView: View {
 	/// partial / spanning) starts empty and adds or replaces over the selection on apply.
 	private func beginEditing(range: NSRange, anchor: CGRect) {
 		guard editing == nil else { return } // ignore re-trigger (e.g. ⇧⌘R) while the editor is open
-		// Prefill only when the selection exactly matches an existing group's base — that's an edit.
-		if let group = PorticoRuby.rubyGroup(at: range.location, in: text), group.base == range {
+		if let group = PorticoRuby.rubyGroup(at: range.location, in: engine.attributedString), group.base == range {
 			reading = group.reading
 		} else {
 			reading = ""
@@ -106,15 +157,9 @@ struct ContentView: View {
 
 	private func apply() {
 		guard let edit = editing else { return }
-		setRuby(reading.isEmpty ? nil : reading, for: edit.range) // cleared field removes the ruby
+		// One undoable step through the engine (cleared field removes), not a document replacement.
+		engine.setRuby(reading.isEmpty ? nil : reading, for: edit.range)
 		editing = nil
-	}
-
-	private func setRuby(_ newReading: String?, for range: NSRange) {
-		guard range.location + range.length <= text.length else { return }
-		let mutable = NSMutableAttributedString(attributedString: text)
-		PorticoRuby.setRuby(newReading, for: range, in: mutable)
-		text = mutable
 	}
 }
 

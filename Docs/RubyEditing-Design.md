@@ -128,9 +128,9 @@ IME concern dissolves with a "committed text only" trigger.)*
 - **(a) Inline notation conversion** — *primary, keyboard-first.* Type `漢字《かんじ》` (and the
   `｜` explicit-base form the parser already supports) and it converts on the closing `》`.
   Contract: converts **only on committed text — never inside IME marked text**. Designed to
-  be **undoable in one step** back to the literal characters (escape hatch for a literal `》`)
-  — the reversion is a single text replacement, but no undo manager is wired to the engine
-  yet, so this is a design property, not a shipped feature (§11, still open).
+  be **undoable in one step** back to the literal characters (escape hatch for a literal `》`) —
+  **shipped**: the conversion is its own undo step (Docs/UndoRedo-Design.md §4), so undo returns to
+  the literal notation.
 - **(b) Select base → set/edit reading** — *reference API validation.* Selection → query →
   `setRuby`; the MS Word ルビ-dialog idiom. Ship it as the **Example app's** demo — see §7.1
   for the per-platform form.
@@ -280,9 +280,12 @@ Resolved during implementation:
   inline-conversion hook. No separate normalization pass was needed (§3, §10 step 3).
 - Trimming (store as-given) and the zero-length-range no-op — decided (§5).
 
+Resolved:
+- **Undo granularity** for inline conversion and `setRuby` — **shipped:** each structural op
+  (`setRuby`, paste, cut, inline conversion) is one discrete undo step; plain typing coalesces into
+  a run. See Docs/UndoRedo-Design.md.
+
 Genuinely still open:
-- **Undo granularity** for inline conversion and `setRuby` — one step or per-char? (No undo
-  manager is wired to the engine yet.)
 - **Reading normalization** on input (full-width/half-width kana) — framework or client?
 
 ## 12. Parked ideas (future, not v1)

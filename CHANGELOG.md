@@ -2,6 +2,21 @@
 
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
+## [Unreleased]
+### Added
+- **Undo / redo** across every edit — typing (coalesced into runs), delete, paste, cut, ruby
+  (`setRuby`), and inline `《》` conversion. Driven by Edit ▸ Undo / ⌘Z / iOS shake. Undo is
+  **model-scoped**: `PorticoTextLayoutEngine` owns a (default private, injectable) `UndoManager`,
+  so history survives view teardown when you retain the engine.
+- **`PorticoView(engine:)`** initializer — inject a client-owned engine for model-scoped undo (the
+  existing `PorticoView(text:)` binding init keeps view-scoped undo). The engine also gains a public
+  `setRuby(_:for:)` — the undoable ruby-edit command.
+
+### Changed (breaking)
+- `PorticoTextLayoutEngine` is now `@MainActor` (it owns a main-actor-isolated `UndoManager`; it was
+  already main-thread UI state). `PorticoView`'s previously-public stored `text`/`orientation`
+  properties are now private — use the initializers.
+
 ## [0.2.2]
 ### Fixed
 - iOS: the client's selection-menu action (e.g. "Ruby…") was buried below the fold on the long

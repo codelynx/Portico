@@ -33,11 +33,18 @@ From the **user's** side:
 - **IME** marked text and candidate placement on both platforms.
 - **Clipboard** — cut / copy / paste / select-all; copy carries ruby, so it survives paste.
 - In-place **ruby editing** — select text, invoke a menu action, set/edit/remove the reading.
+- **Undo / redo** across every edit — typing, delete, paste, cut, ruby, inline conversion.
+  **Model-scoped** when you own the engine: history survives view teardown. Portico vends the
+  engine's `UndoManager` up the AppKit responder chain (so it works from a custom `NSView`/`UIView`
+  and your own Undo buttons); a **SwiftUI** app should also replace the default Edit ▸ Undo/Redo
+  commands to drive the engine — SwiftUI's own Undo binds to a different manager (the
+  [Example](Example/Example/ExampleApp.swift) shows the `FocusedValue` + `CommandGroup` wiring).
 
 From the **integrator's** side:
 
-- A SwiftUI **`PorticoView`**, or the platform-neutral **`PorticoTextLayoutEngine`** to drive
-  your own `NSView`/`UIView`.
+- A SwiftUI **`PorticoView`** — `PorticoView(text:)` for a quick binding, or `PorticoView(engine:)`
+  when you own the engine (model-scoped undo) — or the platform-neutral **`PorticoTextLayoutEngine`**
+  to drive your own `NSView`/`UIView`.
 - A plain-text **ruby notation** (`PorticoRuby`) for authoring and persistence.
 - Geometry + a **menu seam** to build your own editing UI without reimplementing layout.
 
@@ -134,25 +141,28 @@ PorticoView(text: $text, orientation: orientation, selectedRange: $selectedRange
 
 Set `onSelectionMenuAction` and Portico adds a **menu item** to the iOS edit menu and the macOS
 right-click menu, handing your handler the selected range plus a popover **anchor rect** (top-left
-view coordinates). You supply the reading UI; you write the change with `setRuby`. Opt-out by
-default — no action, no menu item. For a macOS `Edit ▸ …` command, wire a main-menu item to the
-view's `performSelectionMenuAction(_:)` (the [Example](Example/Example/ExampleApp.swift) does this
-with a `⇧⌘R` shortcut).
+view coordinates). You supply the reading UI; you write the change with **`engine.setRuby`** — one
+**undoable** step. Own the engine (`PorticoView(engine:)`) so ruby edits are undoable and
+model-scoped. Opt-out by default — no action, no menu item. For a macOS `Edit ▸ …` command, wire a
+main-menu item to the view's `performSelectionMenuAction(_:)` (the
+[Example](Example/Example/ExampleApp.swift) does this with a `⇧⌘R` shortcut).
 
 ```swift
 struct RubyEditor: View {
-    @State private var text = PorticoRuby.parse("吾輩《わがはい》は猫《ねこ》である。")
+    // Own the engine → ruby edits are undoable and model-scoped.
+    @State private var engine = PorticoTextLayoutEngine(
+        attributedString: PorticoRuby.parse("吾輩《わがはい》は猫《ねこ》である。"))
     @State private var editing: (range: NSRange, anchor: CGRect)?
     @State private var reading = ""
 
     var body: some View {
         PorticoView(
-            text: $text,
+            engine: engine,
             orientation: .vertical,
             onSelectionMenuAction: PorticoSelectionMenuAction(title: "Ruby…") { range, anchor in
                 // Prefill only when the selection is exactly an existing group's base (an edit);
                 // otherwise start empty (add / replace over the selection).
-                let group = PorticoRuby.rubyGroup(at: range.location, in: text)
+                let group = PorticoRuby.rubyGroup(at: range.location, in: engine.attributedString)
                 reading = (group?.base == range ? group?.reading : nil) ?? ""
                 editing = (range, anchor)
             }
@@ -161,9 +171,8 @@ struct RubyEditor: View {
             if let edit = editing {
                 TextField("reading", text: $reading)     // position at edit.anchor in your layout
                     .onSubmit {
-                        let m = NSMutableAttributedString(attributedString: text)
-                        PorticoRuby.setRuby(reading.isEmpty ? nil : reading, for: edit.range, in: m)
-                        text = m                          // empty reading removes the ruby
+                        // one undoable step (empty reading removes the ruby)
+                        engine.setRuby(reading.isEmpty ? nil : reading, for: edit.range)
                         editing = nil
                     }
             }
@@ -223,10 +232,9 @@ handles/loupe in vertical). Full matrix and rationale: [Platform parity](Docs/Pl
 
 ## Status & limitations
 
-Layout, rendering, selection, IME, ruby (parse / serialize / edit), navigation, and clipboard are
-in place on both platforms. Consciously deferred:
+Layout, rendering, selection, IME, ruby (parse / serialize / edit), navigation, clipboard, and
+undo/redo are in place on both platforms. Consciously deferred:
 
-- **Undo / Redo** — no `UndoManager` wired to the engine yet.
 - **Escaping** of literal `《` / `》` / `｜` in body text (they're treated as control characters).
 - **Mono-/jukugo-ruby** (per-character readings) — v1 is group-ruby.
 - **Public ruby styling knobs** (alignment / overhang / scale) — v1 uses sane fixed defaults.

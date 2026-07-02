@@ -12,7 +12,8 @@ and iOS uses `UIView`/`UITextInput` + `UITextInteraction`.
 | Draw / hit-test / drag-select | ✅ mouse + double-click word-select | ✅ tap + gestures | macOS word-select via `wordRange(at:)` |
 | IME marked text (set/unmark) | ✅ | ✅ | |
 | Insert / delete | ✅ | ✅ | grapheme-cluster–aware `deleteBackward` |
-| Clipboard (cut / copy / paste / select all) | ✅ | ✅ | Engine-backed on both: Copy serializes the selection to Aozora notation and Paste parses it, so **ruby round-trips** copy/paste. macOS via `NSResponder` actions (Edit menu + ⌘X/C/V/A); iOS via `UIResponderStandardEditActions` + `canPerformAction` (the native edit menu — `UITextInteraction` gates items on these, it doesn't supply them). Undo/Redo still needs an `UndoManager` (deferred) |
+| Clipboard (cut / copy / paste / select all) | ✅ | ✅ | Engine-backed on both: Copy serializes the selection to Aozora notation and Paste parses it, so **ruby round-trips** copy/paste. macOS via `NSResponder` actions (Edit menu + ⌘X/C/V/A); iOS via `UIResponderStandardEditActions` + `canPerformAction` (the native edit menu — `UITextInteraction` gates items on these, it doesn't supply them). |
+| Undo / redo | ✅ | ✅ | Engine owns a model-scoped `UndoManager`, vended by the view up the responder chain (Edit ▸ Undo / ⌘Z on macOS, ⌘Z / shake on iOS). Blocked while composing (view vends `nil`); see `Docs/UndoRedo-Design.md` |
 | Arrow-key caret navigation | ✅ | ✅ | iOS via `UITextInput` (`position(from:in:)`, orientation-aware); macOS via `doCommand(by:)` |
 | Shift+arrow selection | ✅ | ✅ | |
 | Selection-rect geometry | ✅ | ✅ | shared `selectionRects(for:)` |
