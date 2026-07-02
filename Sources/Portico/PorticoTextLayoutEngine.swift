@@ -101,13 +101,7 @@ public class PorticoTextLayoutEngine {
 	
 	public func setMarkedText(_ text: String, selectedRange: NSRange, replacementRange: NSRange?) {
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
-		let attrs = cursorIndex > 0 ? mutableString.attributes(at: cursorIndex - 1, effectiveRange: nil) : [:]
-		
-		var markedAttrs = attrs
-		markedAttrs[NSAttributedString.Key(kCTUnderlineStyleAttributeName as String)] = CTUnderlineStyle.single.rawValue
-		
-		let insertedString = NSAttributedString(string: text, attributes: markedAttrs)
-		
+
 		let targetRange: NSRange
 		if let repRange = replacementRange, repRange.location != NSNotFound {
 			targetRange = repRange
@@ -118,7 +112,17 @@ public class PorticoTextLayoutEngine {
 		} else {
 			targetRange = NSRange(location: cursorIndex, length: 0)
 		}
-		
+
+		let attrs = cursorIndex > 0 ? mutableString.attributes(at: cursorIndex - 1, effectiveRange: nil) : [:]
+		var markedAttrs = attrs
+		markedAttrs[NSAttributedString.Key(kCTUnderlineStyleAttributeName as String)] = CTUnderlineStyle.single.rawValue
+		// Same ruby attribute-edge rule as insertText: composing text joins a ruby group only
+		// when strictly inside one; at a boundary it must not inherit the base's ruby (§6).
+		if !insertionExtendsRubyGroup(at: targetRange.location, replacing: targetRange.length, in: mutableString) {
+			markedAttrs.removeValue(forKey: rubyAttributeKey)
+		}
+
+		let insertedString = NSAttributedString(string: text, attributes: markedAttrs)
 		mutableString.replaceCharacters(in: targetRange, with: insertedString)
 		
 		self.markedRange = text.isEmpty ? nil : NSRange(location: targetRange.location, length: text.utf16.count)

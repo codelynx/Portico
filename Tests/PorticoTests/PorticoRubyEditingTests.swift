@@ -131,6 +131,47 @@ private func roundTrips(_ engine: PorticoTextLayoutEngine) -> Bool {
 	#expect(roundTrips(e))
 }
 
+@Test func markedTextAfterRubyBaseIsPlain() {
+	// IME composition after a base must not inherit its ruby (same boundary rule as insertText).
+	let e = editEngine("漢字《かんじ》") // [0,2)
+	e.cursorIndex = 2
+	e.setMarkedText("か", selectedRange: NSRange(location: 1, length: 0), replacementRange: nil)
+	#expect(e.attributedString.string == "漢字か")
+	#expect(hasRuby(e.attributedString, at: 0) && hasRuby(e.attributedString, at: 1))
+	#expect(!hasRuby(e.attributedString, at: 2)) // composing char is plain
+}
+
+@Test func markedTextInsideRubyBaseInheritsGroup() {
+	let e = editEngine("漢字《かんじ》")
+	e.cursorIndex = 1
+	e.setMarkedText("ん", selectedRange: NSRange(location: 1, length: 0), replacementRange: nil)
+	#expect(e.attributedString.string == "漢ん字")
+	#expect(hasRuby(e.attributedString, at: 1)) // interior composing text joins the group
+}
+
+@Test func deleteNewlineMergingRubyParagraphsRoundTrips() {
+	let e = editEngine("春《はる》\n秋《あき》") // "春\n秋"
+	e.cursorIndex = 2 // after the newline
+	e.deleteBackward() // delete the newline
+	#expect(e.attributedString.string == "春秋")
+	#expect(PorticoRuby.rubyGroups(in: NSRange(location: 0, length: e.attributedString.length), of: e.attributedString).count == 2)
+	#expect(roundTrips(e))
+}
+
+@Test func pastingAnnotatedRubyMidBaseSplitsGroupButRoundTrips() {
+	// Not reachable via the String-based insertText/setMarkedText API; documents attribute-
+	// store behavior for a future "paste attributed content" feature: inserting a ruby
+	// fragment inside a base splits it into three valid groups that still round-trip.
+	// Revisit normalization if/when attributed paste ships.
+	let s = NSMutableAttributedString(attributedString: PorticoRuby.parse("漢字《かんじ》")) // [0,2)
+	let fragment = PorticoRuby.parse("｜X《えっくす》")
+	s.replaceCharacters(in: NSRange(location: 1, length: 0), with: fragment) // paste inside the base
+	#expect(s.string == "漢X字")
+	let groups = PorticoRuby.rubyGroups(in: NSRange(location: 0, length: s.length), of: s)
+	#expect(groups.count == 3) // 漢=かんじ, X=えっくす, 字=かんじ
+	#expect(PorticoRuby.parse(PorticoRuby.serialize(s)).string == s.string)
+}
+
 // MARK: - §5 editing primitives: setRuby / rubyGroup / rubyGroups
 
 private func mutable(_ notation: String) -> NSMutableAttributedString {

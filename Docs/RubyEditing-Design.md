@@ -91,9 +91,10 @@ unit-testable), rather than a new stateful subsystem.
   char-by-char and it stays editable (atomic groups would stop you fixing a typo inside a
   base without destroying its ruby — that surprises, and fights IME/selection). The
   **reading is an attribute** — never caret-reachable, edited only as a whole via §5/§7.
-- **Insertion rule (precise, generalizes the bug fix):** an insertion strictly **inside**
-  a base extends the group; an insertion at **either boundary** is **plain text**. This is
-  the standard attribute-edge rule; the adjacent-typing bug is the boundary case of it.
+- **Insertion rule (precise, generalizes the bug fix):** an insertion strictly **inside** a
+  base extends the group; an insertion at **either boundary** is **plain text** — for both
+  typed and IME-composing (marked) text. This is the standard attribute-edge rule; the
+  adjacent-typing bug is the boundary case of it.
 - **Delete = per-char; group shrinks; an empty group disappears.** Backspace inside a base
   shrinks the annotation range; deleting the last base char drops the group. A shrunk group
   is a **valid state** (range maintenance), not the old "half-annotated base" bug. A reading
@@ -102,15 +103,21 @@ unit-testable), rather than a new stateful subsystem.
 - **Partial-base selection: allowed, no snapping.** Selection is plain text selection.
   Expose a group-boundary query so clients can implement snap-on-double-tap *themselves* if
   they want it — Portico doesn't force it.
-- **Post-edit integrity — handled by the attribute store (verified).** We expected to need a
-  normalization pass, but `NSMutableAttributedString` already does the right thing: it
-  re-anchors a group's `CTRubyAnnotation` to its surviving contiguous base on delete, extends
-  it on an interior insert, and drops it when the base is emptied. And because each group is a
-  **distinct** annotation object, adjacent groups (even same-reading) never coalesce. So **no
-  explicit normalization pass is required** for the §3 invariant — the guarantee is enforced by
-  edit-scenario **round-trip tests** (delete inside / whole / across-boundary, adjacent groups
-  incl. same-reading, interior insert, replace-over-multi-group). A reading can still go
-  semantically stale after a base edit — the author's problem, not a structural break.
+- **Post-edit integrity — the attribute store handles it (verified on current platforms).** We
+  expected to need a normalization pass, but `NSMutableAttributedString` already does the right
+  thing: it re-anchors a group's `CTRubyAnnotation` to its surviving contiguous base on delete,
+  extends it on an interior insert, and drops it when the base is emptied. And because each group
+  is a **distinct** annotation object, adjacent groups (even same-reading) don't coalesce. This is
+  undocumented framework behavior, not an API guarantee — so rather than add a normalization pass,
+  the edit-scenario **round-trip tests** (delete inside / whole / across-boundary, adjacent incl.
+  same-reading, interior insert, replace-over-multi-group, newline-merge) are the guard that would
+  catch any OS regression. A reading can still go semantically stale after a base edit — the
+  author's problem, not a structural break.
+- **Known limitation (deferred fix, not ruby-specific): `deleteBackward` is UTF-16-unit based,**
+  not grapheme-cluster based, so a base containing a surrogate-pair CJK-extension character, emoji,
+  or combining sequence can be split into an invalid string. Fix is small
+  (`rangeOfComposedCharacterSequence(at:)`) and deserves its own tiny engine packet outside the
+  ruby phase.
 
 ## 7. Authoring UX (Q2) — two supported paths, one deferred
 
