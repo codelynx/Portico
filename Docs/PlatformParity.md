@@ -12,7 +12,7 @@ and iOS uses `UIView`/`UITextInput` + `UITextInteraction`.
 | Draw / hit-test / drag-select | ✅ mouse + double-click word-select | ✅ tap + gestures | macOS word-select via `wordRange(at:)` |
 | IME marked text (set/unmark) | ✅ | ✅ | |
 | Insert / delete | ✅ | ✅ | grapheme-cluster–aware `deleteBackward` |
-| Clipboard (cut / copy / paste / select all) | ✅ ruby round-trips | ✅ plain text | macOS: engine-backed responder actions (Edit menu + ⌘X/C/V/A); Copy serializes the selection to Aozora notation and Paste parses it, so **ruby survives copy/paste**. iOS: via `UITextInteraction` (`text(in:)`/`replace`), which copies **plain base text** — ruby is not yet preserved on iOS (asymmetry; a notation-aware iOS Copy is a follow-up) |
+| Clipboard (cut / copy / paste / select all) | ✅ | ✅ | Engine-backed on both: Copy serializes the selection to Aozora notation and Paste parses it, so **ruby round-trips** copy/paste. macOS via `NSResponder` actions (Edit menu + ⌘X/C/V/A); iOS via `UIResponderStandardEditActions` + `canPerformAction` (the native edit menu — `UITextInteraction` gates items on these, it doesn't supply them). Undo/Redo still needs an `UndoManager` (deferred) |
 | Arrow-key caret navigation | ✅ | ✅ | iOS via `UIKeyCommand` |
 | Shift+arrow selection | ✅ | ✅ | |
 | Selection-rect geometry | ✅ | ✅ | shared `selectionRects(for:)` |

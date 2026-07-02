@@ -388,6 +388,53 @@ public class PorticoTextView: UIView, UITextInput {
 		setNeedsDisplay()
 	}
 
+	// MARK: - Clipboard (UIResponderStandardEditActions)
+	// UITextInteraction gates edit-menu items on canPerformAction + the responder implementing the
+	// action; it doesn't supply Cut/Copy/Paste itself. Copy uses Aozora notation (like macOS), so
+	// ruby round-trips copy/paste on iOS too.
+	public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+		let hasSelection = (layoutEngine.selectionRange?.length ?? 0) > 0
+		switch action {
+		case #selector(copy(_:)), #selector(cut(_:)):
+			return hasSelection
+		case #selector(paste(_:)):
+			return UIPasteboard.general.hasStrings
+		case #selector(selectAll(_:)):
+			return layoutEngine.attributedString.length > 0
+		default:
+			return super.canPerformAction(action, withSender: sender)
+		}
+	}
+
+	public override func copy(_ sender: Any?) {
+		guard let notation = layoutEngine.serializedSelection() else { return }
+		UIPasteboard.general.string = notation
+	}
+
+	public override func cut(_ sender: Any?) {
+		copy(sender)
+		guard layoutEngine.selectionRange != nil else { return }
+		inputDelegate?.textWillChange(self)
+		layoutEngine.deleteBackward() // deletes the current selection
+		inputDelegate?.textDidChange(self)
+		setNeedsDisplay()
+	}
+
+	public override func paste(_ sender: Any?) {
+		guard let string = UIPasteboard.general.string else { return }
+		inputDelegate?.textWillChange(self)
+		layoutEngine.insertNotation(string) // parses notation → ruby round-trips
+		inputDelegate?.textDidChange(self)
+		setNeedsDisplay()
+	}
+
+	public override func selectAll(_ sender: Any?) {
+		inputDelegate?.selectionWillChange(self)
+		layoutEngine.setSelectedRange(NSRange(location: 0, length: layoutEngine.attributedString.length))
+		inputDelegate?.selectionDidChange(self)
+		setNeedsDisplay()
+	}
+
 	// MARK: - Selection edit menu (design §7.2 seam)
 
 	/// Augment the native selection menu with the client's action (iOS 16+). Returning
