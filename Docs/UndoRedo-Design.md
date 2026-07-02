@@ -115,6 +115,14 @@ responsibility too: the view validates Edit ▸ Undo/Redo (and equivalents) as *
 `markedRange != nil`**, so the no-op isn't mysterious. The system IME keeps its own preedit
 cancel/undo behavior.
 
+**Phase-2 interim state (Phase-3 obligation).** Phase 2 parks IME-commit undo: `insertText`
+registers no typing step while `markedRange != nil`. But inline `《》` conversion still runs after
+an IME commit (correctly — Japanese users type the brackets *through* the IME), so it registers
+its own step. The asymmetry: after an IME commit that forms ruby, undo #1 reverts the conversion to
+literal notation, but the commit itself has no step yet. **Phase 3 must** capture a pre-composition
+snapshot at composition start and register it on commit, so IME-commit-then-conversion undoes in
+two steps, identical to typed input.
+
 ## 7. Scope (v1)
 
 Full editing surface — typing, delete, paste, cut, `setRuby`, inline conversion. Partial coverage

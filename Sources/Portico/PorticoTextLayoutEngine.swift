@@ -418,22 +418,48 @@ public class PorticoTextLayoutEngine {
 
 		let insertedString = NSAttributedString(string: text, attributes: cleanAttrs)
 		mutableString.replaceCharacters(in: targetRange, with: insertedString)
-		var newCursor = targetRange.location + text.utf16.count
-		// Inline notation: a just-committed `》` closing `…《reading》` converts to a ruby group
-		// (§7a). Only here (committed text) — never in setMarkedText (IME composition).
-		newCursor = convertInlineRuby(in: mutableString, cursor: newCursor)
-		self.cursorIndex = newCursor
+		self.cursorIndex = targetRange.location + text.utf16.count
 		self.selectionRange = nil
 		self.markedRange = nil
 
 		self.attributedString = mutableString
 		textDidChange?(self.attributedString)
 		updateLayout()
+
+		// Inline notation (§7a): a just-typed `》` closing `…《reading》` converts to a ruby group —
+		// as a SEPARATE undo step (see applyInlineRubyConversion), so undo returns to the literal
+		// characters first. Guarded internally to only fire when a run actually closes.
+		applyInlineRubyConversion()
 	}
 
 	// MARK: - Clipboard round-trip (backs macOS copy/cut/paste)
 	// Ruby survives copy/paste by going through Aozora notation: Copy serializes the selection,
 	// Paste parses it back. See Docs/RubyEditing-Design.md §7.2.
+
+	/// Set / edit / remove the ruby reading over `range` as **one undo step** (nil, empty, or
+	/// whitespace-only removes it). The base text is unchanged, so the caret/selection are
+	/// preserved. This is the undoable ruby-edit command a client drives (design §4) instead of
+	/// replacing the whole document via the binding. No-op (and no undo step) if the range is empty
+	/// or out of bounds, or if the reading doesn't actually change.
+	public func setRuby(_ reading: String?, for range: NSRange) {
+		guard range.length > 0, range.location >= 0, NSMaxRange(range) <= attributedString.length else { return }
+		let mutableString = NSMutableAttributedString(attributedString: attributedString)
+		PorticoRuby.setRuby(reading, for: range, in: mutableString)
+		// No-op check must compare ruby **semantics**, not `isEqual`: setRuby attaches a fresh
+		// CTRubyAnnotation, so re-applying the same reading is not `isEqual` and would push a dead
+		// undo step. Compare the (base, reading) groups instead. (Base text is unchanged. Foreign
+		// values under the ruby key aren't genuine groups, so a setRuby that would only clear one
+		// counts as a no-op here — not ours to manage.)
+		let full = NSRange(location: 0, length: attributedString.length)
+		func rubyKey(_ s: NSAttributedString) -> [String] {
+			PorticoRuby.rubyGroups(in: full, of: s).map { "\($0.base.location),\($0.base.length)=\($0.reading)" }
+		}
+		guard rubyKey(attributedString) != rubyKey(mutableString) else { return }
+		beginUndoStep()
+		attributedString = mutableString
+		textDidChange?(attributedString)
+		updateLayout()
+	}
 
 	/// The current selection serialized to Aozora notation (ruby preserved), or nil if there is no
 	/// non-empty selection. Plain text serializes to itself (no marks).
@@ -446,6 +472,7 @@ public class PorticoTextLayoutEngine {
 	/// giving the pasted text the insertion context's base attributes (font/colour) while keeping
 	/// its parsed ruby annotations. Plain pasted text (no `《》`) inserts as plain text.
 	func insertNotation(_ notation: String) {
+		beginUndoStep() // paste is one discrete undo step
 		var contextAttrs: [NSAttributedString.Key: Any] =
 			(cursorIndex > 0 && cursorIndex <= attributedString.length)
 			? attributedString.attributes(at: cursorIndex - 1, effectiveRange: nil) : [:]
@@ -471,22 +498,37 @@ public class PorticoTextLayoutEngine {
 		updateLayout()
 	}
 
-	/// Converts a just-closed inline ruby run `[｜]base《reading》` into a ruby group (§7a),
-	/// preserving the base text's existing attributes. Mutates `string`; returns the updated
-	/// cursor (end of the base) or `cursor` unchanged when there's nothing to convert.
-	private func convertInlineRuby(in string: NSMutableAttributedString, cursor: Int) -> Int {
-		guard cursor > 0,
-			  let match = PorticoRuby.inlineRubyMatch(
-				in: string.string as NSString,
-				closingAt: cursor - 1,
+	/// If the caret just closed an inline ruby run `[｜]base《reading》`, convert it to a ruby group
+	/// (§7a) as its **own** undo step — the typing run is closed first, so undo #1 reverts the
+	/// conversion to the literal `《》` characters and undo #2 reverts the typing (design §4).
+	/// No-op when nothing closes a run.
+	///
+	/// Note: on the converting keystroke, `textDidChange` fires **twice** — once for the literal
+	/// notation (from `insertText`) and once for the converted group (here). Both are synchronous
+	/// within the one call, so no intermediate frame is drawn — view rendering normally sees only
+	/// the final state — but a direct observer (e.g. autosave / dirty-tracking) sees both
+	/// transitions. This mirrors the two undo steps and is intentional.
+	private func applyInlineRubyConversion() {
+		guard cursorIndex > 0 else { return }
+		let mutableString = NSMutableAttributedString(attributedString: attributedString)
+		guard let match = PorticoRuby.inlineRubyMatch(
+				in: mutableString.string as NSString,
+				closingAt: cursorIndex - 1,
 				// Auto-base must not swallow a character already in a ruby group.
-				isRuby: { string.attribute(PorticoRuby.rubyKey, at: $0, effectiveRange: nil) != nil })
-		else { return cursor }
+				isRuby: { mutableString.attribute(PorticoRuby.rubyKey, at: $0, effectiveRange: nil) != nil })
+		else { return }
+		typingRunOpen = false
+		beginUndoStep() // discrete step: its snapshot is the literal notation just typed
 		// Keep the base with its attributes, drop the marks + reading, then attach the ruby.
-		let base = NSMutableAttributedString(attributedString: string.attributedSubstring(from: match.baseRange))
+		let base = NSMutableAttributedString(attributedString: mutableString.attributedSubstring(from: match.baseRange))
 		PorticoRuby.setRuby(match.reading, for: NSRange(location: 0, length: base.length), in: base)
-		string.replaceCharacters(in: match.sourceRange, with: base)
-		return match.sourceRange.location + base.length
+		mutableString.replaceCharacters(in: match.sourceRange, with: base)
+		cursorIndex = match.sourceRange.location + base.length
+		selectionRange = nil
+		markedRange = nil
+		attributedString = mutableString
+		textDidChange?(attributedString)
+		updateLayout()
 	}
 	
 	public func deleteBackward() {

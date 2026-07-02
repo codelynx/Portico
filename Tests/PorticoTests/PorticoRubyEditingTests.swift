@@ -21,6 +21,81 @@ private func editEngine(_ notation: String) -> PorticoTextLayoutEngine {
 	)
 }
 
+// MARK: - Undo / Redo (Phase 2: structural ops — paste, setRuby, inline conversion)
+
+@Test func pasteNotationUndoesAndRedoesAsOneStep() {
+	let e = editEngine("ab") // caret at end
+	e.insertNotation("漢字《かんじ》")
+	#expect(e.attributedString.string == "ab漢字")
+	e.undoManager.undo()
+	#expect(e.attributedString.string == "ab")
+	e.undoManager.redo()
+	#expect(e.attributedString.string == "ab漢字")
+	#expect(PorticoRuby.rubyGroup(at: 2, in: e.attributedString)?.reading == "かんじ")
+}
+
+@Test func engineSetRubyAddAndRemoveAreEachUndoable() {
+	let e = editEngine("漢字") // plain, no ruby
+	e.setRuby("かんじ", for: NSRange(location: 0, length: 2)) // add
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "かんじ")
+	e.undoManager.undo()
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString) == nil) // add reverted
+	e.undoManager.redo()
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "かんじ")
+	e.setRuby(nil, for: NSRange(location: 0, length: 2)) // remove
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString) == nil)
+	e.undoManager.undo()
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "かんじ") // remove reverted
+}
+
+@Test func inlineConversionUndoesToLiteralThenToTyping() {
+	let e = editEngine("")
+	for ch in "漢字《かんじ》" { e.insertText(String(ch)) } // converts on the closing 》
+	#expect(e.attributedString.string == "漢字")
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "かんじ")
+	e.undoManager.undo() // step 1: revert conversion → literal notation
+	#expect(e.attributedString.string == "漢字《かんじ》")
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString) == nil)
+	e.undoManager.undo() // step 2: revert the typing
+	#expect(e.attributedString.string == "")
+	// redo replays both steps in order: typing back, then conversion back
+	e.undoManager.redo()
+	#expect(e.attributedString.string == "漢字《かんじ》")
+	e.undoManager.redo()
+	#expect(e.attributedString.string == "漢字")
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "かんじ")
+	#expect(!e.undoManager.canRedo) // redo chain exhausted at the converted state
+}
+
+@Test func pasteOverSelectionUndoRestoresTextAndSelection() {
+	let e = editEngine("hello world")
+	e.setSelectedRange(NSRange(location: 0, length: 5)) // select "hello"
+	e.insertNotation("猫《ねこ》")                        // replace selection
+	#expect(e.attributedString.string == "猫 world")
+	e.undoManager.undo()
+	#expect(e.attributedString.string == "hello world")
+	#expect(e.selectionRange == NSRange(location: 0, length: 5)) // selection restored
+	e.moveCursor(direction: .right, modifySelection: true)      // anchor restored → extends, not stuck
+	#expect(e.selectionRange == NSRange(location: 0, length: 6))
+}
+
+@Test func engineSetRubyEditRebindsReadingAndUndoesToPrior() {
+	let e = editEngine("漢字《かんじ》") // existing reading かんじ
+	e.setRuby("かな", for: NSRange(location: 0, length: 2)) // edit reading
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "かな")
+	e.undoManager.undo()
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "かんじ") // prior reading restored
+}
+
+@Test func engineSetRubySameReadingRegistersNoUndoStep() {
+	let e = editEngine("漢字《かんじ》")
+	e.setRuby("べつ", for: NSRange(location: 0, length: 2))  // a real edit (registers a step)
+	e.setRuby("べつ", for: NSRange(location: 0, length: 2))  // identical → semantic no-op, no new step
+	e.undoManager.undo()                                    // undoes the real edit, not a dead no-op
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "かんじ") // back to original
+	#expect(!e.undoManager.canUndo)                         // stack depth was 1, not 2
+}
+
 @Test func typingAfterRubyBaseIsPlain() {
 	// The reported bug: caret at the end boundary of 漢字《かんじ》, type — must NOT extend ruby.
 	let e = editEngine("漢字《かんじ》") // base [0,2)
