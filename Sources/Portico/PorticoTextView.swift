@@ -330,30 +330,34 @@ public class PorticoTextView: UIView, UITextInput {
 	
 	// MARK: - UIKeyInput overrides (already inherited by UITextInput)
 	public var hasText: Bool { return layoutEngine.attributedString.length > 0 }
-	public func insertText(_ text: String) {
-		// Bracket with textWillChange/textDidChange so UITextInteraction re-queries geometry:
-		// insertText can reshape text beyond a plain append (inline ruby conversion strips
-		// `《》｜` marks on `》`; a boundary insert strips a ruby annotation, changing line
-		// height with no length change), leaving UIKit's cached caret/selection stale.
-		//
-		// Deliberate contract note: these methods are system-initiated, so per the letter of
-		// UITextInputDelegate we needn't notify on a *plain* edit. We bracket unconditionally
-		// anyway — the reshape triggers above are multiple and some are geometry-only (no length
-		// delta), so a pre-change "will it reshape?" predicate would be fragile and leak engine
-		// internals. The cost is a benign spurious notify on ordinary typing. (Marked-text edits
-		// stay unbracketed — see setMarkedText.) On-device IME/predictive-text smoke recommended.
+
+	/// Bracket an engine text mutation with the input-delegate notifications so UITextInteraction
+	/// re-queries its cached geometry, then redraw. Text notifications fire **unconditionally** —
+	/// the mutation may reshape text beyond a plain append (inline ruby conversion strips `《》｜`;
+	/// a boundary insert strips a ruby annotation, changing line height with no length delta), so a
+	/// pre-change "will it reshape?" predicate would be fragile; the cost is a benign spurious
+	/// notify on plain typing. Selection notifications fire **only when the mutation replaced a
+	/// selection**, so the now-stale grab handles are dismissed to a caret (plain typing pays
+	/// nothing extra). Marked-text edits stay unbracketed — see setMarkedText.
+	private func mutatingText(replacedSelection: Bool, _ mutate: () -> Void) {
 		inputDelegate?.textWillChange(self)
-		layoutEngine.insertText(text)
+		if replacedSelection { inputDelegate?.selectionWillChange(self) }
+		mutate()
+		if replacedSelection { inputDelegate?.selectionDidChange(self) }
 		inputDelegate?.textDidChange(self)
 		setNeedsDisplay()
 	}
+
+	public func insertText(_ text: String) {
+		mutatingText(replacedSelection: (layoutEngine.selectionRange?.length ?? 0) > 0) {
+			layoutEngine.insertText(text)
+		}
+	}
 	public func deleteBackward() {
-		// deleteBackward is grapheme-cluster–aware (may remove >1 UTF-16 unit), so the
-		// resulting caret can differ from UIKit's single-unit assumption — notify to re-query.
-		inputDelegate?.textWillChange(self)
-		layoutEngine.deleteBackward()
-		inputDelegate?.textDidChange(self)
-		setNeedsDisplay()
+		// Grapheme-cluster–aware: deletes the selection when there is one, else one cluster back.
+		mutatingText(replacedSelection: (layoutEngine.selectionRange?.length ?? 0) > 0) {
+			layoutEngine.deleteBackward()
+		}
 	}
 
 	// MARK: - Clipboard (UIResponderStandardEditActions)
@@ -382,26 +386,19 @@ public class PorticoTextView: UIView, UITextInput {
 	public override func cut(_ sender: Any?) {
 		guard (layoutEngine.selectionRange?.length ?? 0) > 0 else { return }
 		copy(sender)
-		inputDelegate?.textWillChange(self)
-		layoutEngine.deleteBackward() // deletes the current selection
-		inputDelegate?.textDidChange(self)
-		setNeedsDisplay()
+		mutatingText(replacedSelection: true) { layoutEngine.deleteBackward() } // deletes the selection
 	}
 
 	public override func paste(_ sender: Any?) {
 		guard let string = UIPasteboard.general.string else { return }
-		inputDelegate?.textWillChange(self)
-		layoutEngine.insertNotation(string) // parses notation → ruby round-trips
-		inputDelegate?.textDidChange(self)
-		setNeedsDisplay()
+		mutatingText(replacedSelection: (layoutEngine.selectionRange?.length ?? 0) > 0) {
+			layoutEngine.insertNotation(string) // parses notation → ruby round-trips
+		}
 	}
 
 	public override func delete(_ sender: Any?) {
 		guard (layoutEngine.selectionRange?.length ?? 0) > 0 else { return }
-		inputDelegate?.textWillChange(self)
-		layoutEngine.deleteBackward() // deletes the current selection
-		inputDelegate?.textDidChange(self)
-		setNeedsDisplay()
+		mutatingText(replacedSelection: true) { layoutEngine.deleteBackward() } // deletes the selection
 	}
 
 	public override func selectAll(_ sender: Any?) {
@@ -438,16 +435,14 @@ public class PorticoTextView: UIView, UITextInput {
 
 	public func replace(_ range: UITextRange, withText text: String) {
 		guard let r = (range as? PorticoTextRange)?.range else { return }
-		// Programmatic replacement: bracket so UIKit re-queries caret/selection geometry.
-		inputDelegate?.textWillChange(self)
-		// Route through setSelectedRange, not a raw `selectionRange = r`: a zero-length `r`
+		// Route through setSelectedRange (not a raw `selectionRange = r`): a zero-length `r`
 		// (UIKit sends these for QuickType / point insertions) must target its *location*, but the
 		// setter normalizes zero-length to nil — setSelectedRange moves the caret to `r.location`
-		// so insertText inserts there instead of falling back to the old cursor.
-		layoutEngine.setSelectedRange(r)
-		layoutEngine.insertText(text)
-		inputDelegate?.textDidChange(self)
-		setNeedsDisplay()
+		// so insertText inserts there instead of at the old cursor.
+		mutatingText(replacedSelection: r.length > 0) {
+			layoutEngine.setSelectedRange(r)
+			layoutEngine.insertText(text)
+		}
 	}
 
 	public var selectedTextRange: UITextRange? {

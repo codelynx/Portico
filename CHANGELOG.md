@@ -4,6 +4,10 @@ Notable changes to Portico. Pre-1.0, minor versions may include breaking changes
 
 ## [Unreleased]
 ### Fixed
+- iOS: after Cut / Delete / Paste (and backspace or typing over a selection), the native
+  selection grab-handles lingered over the deleted span — the text updated but the selection UI
+  didn't. Mutations that replace a selection now also send `selectionWillChange`/`selectionDidChange`
+  so `UITextInteraction` dismisses the handles to a caret.
 - iOS `replace(_:withText:)` with a **zero-length** range (UIKit uses these for QuickType /
   point insertions) inserted at the old cursor instead of the range's location, a regression
   from the 0.2.0 `selectionRange` normalization. It now routes through `setSelectedRange(_:)`.
