@@ -142,6 +142,12 @@ private func rubies(_ attributed: NSAttributedString) -> [(base: String, range: 
 	#expect(PorticoRuby.serialize(s) == "東｜京都《きょうと》")
 }
 
+@Test func serializeOmitsBaseMarkForKanjiBaseAfterKana() {
+	// Plain kana before a kanji base doesn't get absorbed, so no ｜ (the common author form).
+	let s = PorticoRuby.parse("は猫《ねこ》")
+	#expect(PorticoRuby.serialize(s) == "は猫《ねこ》")
+}
+
 @Test func serializeOmitsBaseMarkForIterationMark() {
 	// 々 counts as kanji for auto-detection, so 人々 needs no ｜.
 	let s = PorticoRuby.parse("人々《ひとびと》")

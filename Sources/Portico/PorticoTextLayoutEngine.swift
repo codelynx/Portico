@@ -18,7 +18,13 @@ public class PorticoTextLayoutEngine {
 	public private(set) var bounds: CGSize
 	public var cursorIndex: Int = 0
 	public var selectionRange: NSRange? {
-		didSet { if oldValue != selectionRange { selectionDidChange?(selectionRange) } }
+		didSet {
+			// Normalize a zero-length selection to nil so "non-nil ⇒ a real span" is an actual
+			// invariant, not a convention — `selectionRange` is publicly settable, so a client can
+			// assign an empty range directly. (Reassigning here does not re-invoke didSet.)
+			if let r = selectionRange, r.length == 0 { selectionRange = nil }
+			if oldValue != selectionRange { selectionDidChange?(selectionRange) }
+		}
 	}
 	public var markedRange: NSRange?
 	/// Fired whenever the selection changes (nil when it collapses to a caret). Lets a client
@@ -599,22 +605,12 @@ public class PorticoTextLayoutEngine {
 	/// current selection, in **top-left / SwiftUI coordinates** (layout rect flipped by the current
 	/// bounds), or nil when there's no non-empty selection. Anchors to the selection's first segment
 	/// in document order (§7.2). Works for **any** selection — ruby or plain — so a client can float
-	/// one editor surface next to any selection. Supersedes `rubyAnchorRectForSelection`.
+	/// one editor surface next to any selection.
 	public func anchorRectForSelection() -> CGRect? {
 		guard let range = selectionRange, range.length > 0 else { return nil }
 		let r = firstSegmentRect(for: range)
 		guard !r.isNull else { return nil }
 		return CGRect(x: r.minX, y: bounds.height - r.maxY, width: r.width, height: r.height)
-	}
-
-	/// Like `anchorRectForSelection` but nil unless the selection is inside a ruby group.
-	/// **Superseded by `anchorRectForSelection`** (which handles plain selections too) — retained
-	/// for the current binding path; regularized to the same first-segment policy (§7.2), fixing
-	/// its former coarse-union anchor.
-	public func rubyAnchorRectForSelection() -> CGRect? {
-		guard let range = selectionRange,
-			  PorticoRuby.rubyGroup(at: range.location, in: attributedString) != nil else { return nil }
-		return anchorRectForSelection()
 	}
 
 	/// The ruby group at `point` (layout coordinates), or nil. Uses **containment** hit-testing

@@ -13,7 +13,7 @@ and iOS uses `UIView`/`UITextInput` + `UITextInteraction`.
 | IME marked text (set/unmark) | ✅ | ✅ | |
 | Insert / delete | ✅ | ✅ | grapheme-cluster–aware `deleteBackward` |
 | Clipboard (cut / copy / paste / select all) | ✅ | ✅ | Engine-backed on both: Copy serializes the selection to Aozora notation and Paste parses it, so **ruby round-trips** copy/paste. macOS via `NSResponder` actions (Edit menu + ⌘X/C/V/A); iOS via `UIResponderStandardEditActions` + `canPerformAction` (the native edit menu — `UITextInteraction` gates items on these, it doesn't supply them). Undo/Redo still needs an `UndoManager` (deferred) |
-| Arrow-key caret navigation | ✅ | ✅ | iOS via `UIKeyCommand` |
+| Arrow-key caret navigation | ✅ | ✅ | iOS via `UITextInput` (`position(from:in:)`, orientation-aware); macOS via `doCommand(by:)` |
 | Shift+arrow selection | ✅ | ✅ | |
 | Selection-rect geometry | ✅ | ✅ | shared `selectionRects(for:)` |
 | Native selection **handles / loupe / edit menu** | n/a (custom-drawn) | ✅ horizontal · ⚠️ vertical | via `UITextInteraction`; vertical is UIKit-limited (§3) |

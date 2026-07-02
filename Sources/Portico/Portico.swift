@@ -20,16 +20,14 @@ public struct PorticoView: NSViewRepresentable {
 	@Binding public var text: NSAttributedString
 	public var orientation: PorticoLayoutOrientation
 	private var selectedRange: Binding<NSRange?>?
-	private var rubyGroupAnchor: Binding<CGRect?>?
 	private var onSelectionMenuAction: PorticoSelectionMenuAction?
 
 	public init(text: Binding<NSAttributedString>, orientation: PorticoLayoutOrientation = .horizontal,
-				selectedRange: Binding<NSRange?>? = nil, rubyGroupAnchor: Binding<CGRect?>? = nil,
+				selectedRange: Binding<NSRange?>? = nil,
 				onSelectionMenuAction: PorticoSelectionMenuAction? = nil) {
 		self._text = text
 		self.orientation = orientation
 		self.selectedRange = selectedRange
-		self.rubyGroupAnchor = rubyGroupAnchor
 		self.onSelectionMenuAction = onSelectionMenuAction
 	}
 
@@ -42,11 +40,9 @@ public struct PorticoView: NSViewRepresentable {
 			}
 		}
 		let selectionBinding = selectedRange
-		let anchorBinding = rubyGroupAnchor
-		engine.selectionDidChange = { [weak engine] range in
+		engine.selectionDidChange = { range in
 			DispatchQueue.main.async {
 				selectionBinding?.wrappedValue = range
-				anchorBinding?.wrappedValue = engine?.rubyAnchorRectForSelection()
 			}
 		}
 		let view = PorticoTextView(frame: .zero, layoutEngine: engine)
@@ -56,22 +52,13 @@ public struct PorticoView: NSViewRepresentable {
 
 	public func updateNSView(_ nsView: PorticoTextView, context: Context) {
 		nsView.onSelectionMenuAction = onSelectionMenuAction // refresh each render to avoid a stale closure
-		var layoutChanged = false
 		if nsView.layoutEngine.attributedString != text {
 			nsView.layoutEngine.update(attributedString: text)
 			nsView.setNeedsDisplay(nsView.bounds)
-			layoutChanged = true
 		}
 		if nsView.layoutEngine.orientation != orientation {
 			nsView.layoutEngine.update(orientation: orientation)
 			nsView.setNeedsDisplay(nsView.bounds)
-			layoutChanged = true
-		}
-		// A programmatic change (e.g. setRuby) reflows the layout, so the selected group's
-		// anchor may have moved even though the range didn't — refresh it. (macOS draws its
-		// own selection, so it re-renders correctly on setNeedsDisplay above.)
-		if layoutChanged, let anchorBinding = rubyGroupAnchor {
-			DispatchQueue.main.async { anchorBinding.wrappedValue = nsView.layoutEngine.rubyAnchorRectForSelection() }
 		}
 	}
 }
@@ -80,16 +67,14 @@ public struct PorticoView: UIViewRepresentable {
 	@Binding public var text: NSAttributedString
 	public var orientation: PorticoLayoutOrientation
 	private var selectedRange: Binding<NSRange?>?
-	private var rubyGroupAnchor: Binding<CGRect?>?
 	private var onSelectionMenuAction: PorticoSelectionMenuAction?
 
 	public init(text: Binding<NSAttributedString>, orientation: PorticoLayoutOrientation = .horizontal,
-				selectedRange: Binding<NSRange?>? = nil, rubyGroupAnchor: Binding<CGRect?>? = nil,
+				selectedRange: Binding<NSRange?>? = nil,
 				onSelectionMenuAction: PorticoSelectionMenuAction? = nil) {
 		self._text = text
 		self.orientation = orientation
 		self.selectedRange = selectedRange
-		self.rubyGroupAnchor = rubyGroupAnchor
 		self.onSelectionMenuAction = onSelectionMenuAction
 	}
 
@@ -102,11 +87,9 @@ public struct PorticoView: UIViewRepresentable {
 			}
 		}
 		let selectionBinding = selectedRange
-		let anchorBinding = rubyGroupAnchor
-		engine.selectionDidChange = { [weak engine] range in
+		engine.selectionDidChange = { range in
 			DispatchQueue.main.async {
 				selectionBinding?.wrappedValue = range
-				anchorBinding?.wrappedValue = engine?.rubyAnchorRectForSelection()
 			}
 		}
 		let view = PorticoTextView(frame: .zero, layoutEngine: engine)
@@ -116,7 +99,6 @@ public struct PorticoView: UIViewRepresentable {
 
 	public func updateUIView(_ uiView: PorticoTextView, context: Context) {
 		uiView.onSelectionMenuAction = onSelectionMenuAction // refresh each render to avoid a stale closure
-		var layoutChanged = false
 		if uiView.layoutEngine.attributedString != text {
 			// A programmatic text change from outside the input system (e.g. setRuby). Bracket
 			// it with the UITextInput notifications so UITextInteraction re-queries its cached
@@ -127,7 +109,6 @@ public struct PorticoView: UIViewRepresentable {
 			uiView.layoutEngine.update(attributedString: text)
 			uiView.inputDelegate?.textDidChange(uiView)
 			uiView.setNeedsDisplay()
-			layoutChanged = true
 		}
 		if uiView.layoutEngine.orientation != orientation {
 			// Orientation flips the whole layout, so the selection's geometry changes even
@@ -138,11 +119,6 @@ public struct PorticoView: UIViewRepresentable {
 			uiView.layoutEngine.update(orientation: orientation)
 			uiView.inputDelegate?.selectionDidChange(uiView)
 			uiView.setNeedsDisplay()
-			layoutChanged = true
-		}
-		// Reflow may have moved the selected group's anchor even if the range didn't change.
-		if layoutChanged, let anchorBinding = rubyGroupAnchor {
-			DispatchQueue.main.async { anchorBinding.wrappedValue = uiView.layoutEngine.rubyAnchorRectForSelection() }
 		}
 	}
 }

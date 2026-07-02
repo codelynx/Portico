@@ -282,42 +282,10 @@ public class PorticoTextView: UIView, UITextInput {
 	
 	public override var canBecomeFirstResponder: Bool { return true }
 
-	// MARK: - Hardware keyboard navigation
-	// Mirrors the macOS `doCommand(by:)` path: arrow keys move the caret, Shift+arrow
-	// extends the selection. Both platforms funnel into the same engine call, so the
-	// behavior stays identical. Scope matches macOS — arrows only, no word/line jumps.
-	public override var keyCommands: [UIKeyCommand]? {
-		let arrows = [
-			UIKeyCommand.inputLeftArrow,
-			UIKeyCommand.inputRightArrow,
-			UIKeyCommand.inputUpArrow,
-			UIKeyCommand.inputDownArrow,
-		]
-		return arrows.flatMap { input in
-			[
-				UIKeyCommand(input: input, modifierFlags: [], action: #selector(handleMove(_:))),
-				UIKeyCommand(input: input, modifierFlags: .shift, action: #selector(handleMove(_:))),
-			]
-		}
-	}
-
-	@objc private func handleMove(_ command: UIKeyCommand) {
-		let direction: PorticoTextLayoutEngine.MoveDirection
-		switch command.input {
-		case UIKeyCommand.inputLeftArrow: direction = .left
-		case UIKeyCommand.inputRightArrow: direction = .right
-		case UIKeyCommand.inputUpArrow: direction = .up
-		case UIKeyCommand.inputDownArrow: direction = .down
-		default: return
-		}
-		let modifySelection = command.modifierFlags.contains(.shift)
-		// Bracket the programmatic change so UIKit re-queries caretRect/selectedTextRange
-		// and moves the native caret/selection; otherwise it stalls while the engine advances.
-		inputDelegate?.selectionWillChange(self)
-		layoutEngine.moveCursor(direction: direction, modifySelection: modifySelection)
-		inputDelegate?.selectionDidChange(self)
-		setNeedsDisplay()
-	}
+	// Hardware arrow keys (and Shift+arrow selection) are driven by UITextInteraction through
+	// UITextInput — `position(from:in:offset:)` / `characterRange(byExtending:in:)` — which route
+	// to the engine's orientation-aware movement. An earlier `keyCommands` path was superseded by
+	// that (UIKeyCommand yields to system text handling once UITextInteraction is installed).
 
 	public override func layoutSubviews() {
 		super.layoutSubviews()

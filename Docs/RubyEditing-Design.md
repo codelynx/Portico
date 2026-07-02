@@ -214,11 +214,10 @@ deliberate **touch-up** path, so the one extra tap is appropriate.
   *Not* the union (huge & arbitrary in vertical/wrapped, anchors into whitespace) and *not* the
   active end — active-end anchoring makes the same selection anchor differently by drag
   direction, and is **undefined for two of this menu's own entry points** (double-click
-  word-select and macOS right-click have no meaningful active end). The existing ruby-group
-  `rubyAnchorRectForSelection` is **regularized to the same first-segment policy**, which also
-  fixes its documented coarse-union weakness. One anchor contract for both the ruby and plain
-  cases. A general `selectionBoundingRect` (union) can be added later if a client needs it — kept
-  separate so "anchor" never means "bounds."
+  word-select and macOS right-click have no meaningful active end). It works for **any**
+  selection (ruby or plain), so it fully replaced the earlier ruby-only `rubyAnchorRectForSelection`
+  (since removed). A general `selectionBoundingRect` (union) can be added later if a client needs
+  it — kept separate so "anchor" never means "bounds."
   - **Revisit trigger (locked-with-exit):** if the sim/manual pass shows the popover feeling
     disconnected from the gesture on a long multi-column vertical selection, flip to active-end
     (or last-segment) — a one-line contract change. The empirical counter-argument gets a defined
