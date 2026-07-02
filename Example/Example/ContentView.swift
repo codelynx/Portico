@@ -40,13 +40,20 @@ struct ContentView: View {
 				.border(Color.gray)
 				.overlay(alignment: .topLeading) {
 					// Selecting an existing ruby group floats the editor next to it (anchorRect).
+					// x is clamped to keep the editor on-screen (matters in vertical, where columns
+					// are right-aligned). Deferred to a polished tier: vertical flip-above + arrow
+					// placement — a real client should use a .popover (native edge-avoidance).
 					if let anchor = groupAnchor {
-						rubyEditor
-							.frame(width: 240)
-							.padding(6)
-							.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-							.overlay(RoundedRectangle(cornerRadius: 8).stroke(.secondary))
-							.offset(x: min(anchor.minX, 240), y: anchor.maxY + 4)
+						GeometryReader { geo in
+							let editorWidth: CGFloat = 240
+							rubyEditor
+								.padding(8)
+								.frame(width: editorWidth)
+								.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+								.overlay(RoundedRectangle(cornerRadius: 8).stroke(.secondary))
+								.offset(x: max(0, min(anchor.minX, geo.size.width - editorWidth)),
+										y: anchor.maxY + 4)
+						}
 					}
 				}
 				.ignoresSafeArea(.keyboard, edges: .bottom)
