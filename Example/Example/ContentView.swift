@@ -17,6 +17,7 @@ struct ContentView: View {
 		""")
 	@State private var orientation: PorticoLayoutOrientation = .horizontal
 	@State private var selection: NSRange?
+	@State private var groupAnchor: CGRect?
 	@State private var reading: String = ""
 
 	private var hasSelection: Bool { (selection?.length ?? 0) > 0 }
@@ -30,14 +31,30 @@ struct ContentView: View {
 			.pickerStyle(.segmented)
 			.frame(maxWidth: 300)
 
-			// Selection is observed via the selectedRange binding — the client contract for
-			// building ruby editing on the public API.
-			PorticoView(text: $text, orientation: orientation, selectedRange: $selection)
+			// selectedRange + rubyGroupAnchor are the client contract for building ruby editing
+			// on the public API: observe the selection, and get the group's anchor rect (via
+			// the engine's anchorRect geometry) to float an editor beside it.
+			PorticoView(text: $text, orientation: orientation,
+						selectedRange: $selection, rubyGroupAnchor: $groupAnchor)
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 				.border(Color.gray)
+				.overlay(alignment: .topLeading) {
+					// Selecting an existing ruby group floats the editor next to it (anchorRect).
+					if let anchor = groupAnchor {
+						rubyEditor
+							.frame(width: 240)
+							.padding(6)
+							.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+							.overlay(RoundedRectangle(cornerRadius: 8).stroke(.secondary))
+							.offset(x: min(anchor.minX, 240), y: anchor.maxY + 4)
+					}
+				}
 				.ignoresSafeArea(.keyboard, edges: .bottom)
 
-			rubyEditor
+			// Bottom bar for adding ruby to a plain selection (no group to anchor to).
+			if groupAnchor == nil {
+				rubyEditor
+			}
 		}
 		.padding()
 		.onChange(of: selection) { newSelection in

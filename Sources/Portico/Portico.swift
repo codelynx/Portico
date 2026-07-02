@@ -5,12 +5,14 @@ public struct PorticoView: NSViewRepresentable {
 	@Binding public var text: NSAttributedString
 	public var orientation: PorticoLayoutOrientation
 	private var selectedRange: Binding<NSRange?>?
+	private var rubyGroupAnchor: Binding<CGRect?>?
 
 	public init(text: Binding<NSAttributedString>, orientation: PorticoLayoutOrientation = .horizontal,
-				selectedRange: Binding<NSRange?>? = nil) {
+				selectedRange: Binding<NSRange?>? = nil, rubyGroupAnchor: Binding<CGRect?>? = nil) {
 		self._text = text
 		self.orientation = orientation
 		self.selectedRange = selectedRange
+		self.rubyGroupAnchor = rubyGroupAnchor
 	}
 
 	public func makeNSView(context: Context) -> PorticoTextView {
@@ -22,9 +24,11 @@ public struct PorticoView: NSViewRepresentable {
 			}
 		}
 		let selectionBinding = selectedRange
-		engine.selectionDidChange = { range in
+		let anchorBinding = rubyGroupAnchor
+		engine.selectionDidChange = { [weak engine] range in
 			DispatchQueue.main.async {
 				selectionBinding?.wrappedValue = range
+				anchorBinding?.wrappedValue = engine?.rubyAnchorRectForSelection()
 			}
 		}
 		return PorticoTextView(frame: .zero, layoutEngine: engine)
@@ -46,12 +50,14 @@ public struct PorticoView: UIViewRepresentable {
 	@Binding public var text: NSAttributedString
 	public var orientation: PorticoLayoutOrientation
 	private var selectedRange: Binding<NSRange?>?
+	private var rubyGroupAnchor: Binding<CGRect?>?
 
 	public init(text: Binding<NSAttributedString>, orientation: PorticoLayoutOrientation = .horizontal,
-				selectedRange: Binding<NSRange?>? = nil) {
+				selectedRange: Binding<NSRange?>? = nil, rubyGroupAnchor: Binding<CGRect?>? = nil) {
 		self._text = text
 		self.orientation = orientation
 		self.selectedRange = selectedRange
+		self.rubyGroupAnchor = rubyGroupAnchor
 	}
 
 	public func makeUIView(context: Context) -> PorticoTextView {
@@ -63,9 +69,11 @@ public struct PorticoView: UIViewRepresentable {
 			}
 		}
 		let selectionBinding = selectedRange
-		engine.selectionDidChange = { range in
+		let anchorBinding = rubyGroupAnchor
+		engine.selectionDidChange = { [weak engine] range in
 			DispatchQueue.main.async {
 				selectionBinding?.wrappedValue = range
+				anchorBinding?.wrappedValue = engine?.rubyAnchorRectForSelection()
 			}
 		}
 		return PorticoTextView(frame: .zero, layoutEngine: engine)

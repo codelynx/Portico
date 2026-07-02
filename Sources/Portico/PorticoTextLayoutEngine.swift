@@ -18,7 +18,7 @@ public class PorticoTextLayoutEngine {
 	public private(set) var bounds: CGSize
 	public var cursorIndex: Int = 0
 	public var selectionRange: NSRange? {
-		didSet { selectionDidChange?(selectionRange) }
+		didSet { if oldValue != selectionRange { selectionDidChange?(selectionRange) } }
 	}
 	public var markedRange: NSRange?
 	/// Fired whenever the selection changes (nil when it collapses to a caret). Lets a client
@@ -485,6 +485,18 @@ public class PorticoTextLayoutEngine {
 		let groupRects = rects(forRubyGroupContaining: index)
 		guard let first = groupRects.first else { return .null }
 		return groupRects.dropFirst().reduce(first) { $0.union($1) }
+	}
+
+	/// SwiftUI-client convenience: the anchor rect of the ruby group at the selection's start,
+	/// in **top-left / SwiftUI coordinates** (the layout-coordinate `anchorRect` flipped by the
+	/// current bounds), or nil if the selection isn't inside a group. Lets a SwiftUI overlay be
+	/// positioned next to the group without the client doing Core Text coordinate math.
+	public func rubyAnchorRectForSelection() -> CGRect? {
+		guard let range = selectionRange, range.length > 0,
+			  PorticoRuby.rubyGroup(at: range.location, in: attributedString) != nil else { return nil }
+		let r = anchorRect(forRubyGroupContaining: range.location)
+		guard !r.isNull else { return nil }
+		return CGRect(x: r.minX, y: bounds.height - r.maxY, width: r.width, height: r.height)
 	}
 
 	/// The ruby group at `point` (layout coordinates), or nil. Uses **containment** hit-testing
