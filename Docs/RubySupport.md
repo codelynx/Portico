@@ -71,13 +71,16 @@ PorticoRuby.serialize(_ attributed: NSAttributedString) -> String
 
 - `parse` strips all ruby marks from the body, attaches a `CTRubyAnnotation`
   per base range, and applies `attributes` (font, color, …) to the whole string.
-- `serialize` walks ruby annotations and re-emits marks, always using the
-  **explicit `｜` form** on output (unambiguous regardless of base content), even
-  where the input used auto-detection.
+- `serialize` walks ruby annotations and re-emits marks in **minimal form**: it
+  omits the `｜` when auto-detection would recover the exact same base (a pure-kanji
+  base with no plain kanji absorbed into it), and emits `｜` only where it's needed
+  to disambiguate (non-kanji base, or a plain kanji sitting right before the base).
+  The choice is made **by re-parsing the candidate**, not a hand-written rule, so
+  `serialize` stays in lockstep with `parse` and can't drift. Output reads like
+  hand-authored Aozora (`漢字《かんじ》`, not `｜漢字《かんじ》`).
 - Round-trip guarantee: `parse(serialize(x))` reproduces the same base text and
-  readings; `｜` placement is normalized to the explicit form. (Base text holding
-  literal `《`/`》`/`｜` can't round-trip — no escaping in v1 — but `parse` never
-  produces such bases, so its output always round-trips.)
+  readings. (Base text holding literal `《`/`》`/`｜` can't round-trip — no escaping
+  in v1 — but `parse` never produces such bases, so its output always round-trips.)
 
 An internal primitive (not public in v1) does the actual attach:
 

@@ -344,7 +344,7 @@ private func mutable(_ notation: String) -> NSMutableAttributedString {
 @Test func serializedSelectionEmitsNotationForRubyRange() {
 	let e = editEngine("漢字《かんじ》の") // "漢字の", ruby [0,2)
 	e.setSelectedRange(NSRange(location: 0, length: 2)) // select 漢字 (the group)
-	#expect(e.serializedSelection() == "｜漢字《かんじ》") // explicit-base form
+	#expect(e.serializedSelection() == "漢字《かんじ》") // minimal form — kanji base auto-detects
 }
 
 @Test func serializedSelectionNilWithoutSelection() {

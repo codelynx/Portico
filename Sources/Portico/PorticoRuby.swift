@@ -106,6 +106,7 @@ public enum PorticoRuby {
 	public static func serialize(_ attributed: NSAttributedString) -> String {
 		let full = attributed.string as NSString
 		var result = ""
+		var precedingPlain = "" // plain base text since the last ruby group, for the auto-form check
 
 		attributed.enumerateAttribute(rubyKey, in: NSRange(location: 0, length: attributed.length)) { value, range, _ in
 			let substring = full.substring(with: range)
@@ -113,17 +114,35 @@ public enum PorticoRuby {
 			// (nil, or a foreign value under this key) as plain text — never trap.
 			guard let value, CFGetTypeID(value as CFTypeRef) == CTRubyAnnotationGetTypeID() else {
 				result += substring
+				precedingPlain += substring
 				return
 			}
 			let annotation = value as! CTRubyAnnotation
 			let reading = CTRubyAnnotationGetTextForPosition(annotation, .before) as String? ?? ""
 			if reading.isEmpty {
 				result += substring
-			} else {
-				result += "\(baseMark)\(substring)\(rubyOpen)\(reading)\(rubyClose)"
+				precedingPlain += substring
+				return
 			}
+			// Minimal notation: emit the auto-base form (no `｜`) when the parser recovers exactly
+			// this base from it in its left context; otherwise fall back to the explicit `｜`.
+			// Deciding by re-parsing the candidate — not a hand-written kanji rule — keeps serialize
+			// in lockstep with parse, so the round-trip guarantee can't drift as auto-detection evolves.
+			let mark = autoBaseRoundTrips(base: substring, reading: reading, precedingPlain: precedingPlain) ? "" : String(baseMark)
+			result += "\(mark)\(substring)\(rubyOpen)\(reading)\(rubyClose)"
+			precedingPlain = "" // the group's `》` is a floor: it stops the next auto base's backward scan
 		}
 		return result
+	}
+
+	/// True when `parse` recovers exactly `base` from the auto-base candidate
+	/// `precedingPlain + base《reading》` — i.e. the explicit `｜` can be omitted. The parser is the
+	/// single source of truth for auto-detection, so this never disagrees with it by construction.
+	private static func autoBaseRoundTrips(base: String, reading: String, precedingPlain: String) -> Bool {
+		let candidate = "\(precedingPlain)\(base)\(rubyOpen)\(reading)\(rubyClose)"
+		let groups = allRubyGroups(in: parse(candidate))
+		let expected = NSRange(location: (precedingPlain as NSString).length, length: (base as NSString).length)
+		return groups.count == 1 && groups[0].base == expected
 	}
 
 	// MARK: - Editing primitives (Phase 3)

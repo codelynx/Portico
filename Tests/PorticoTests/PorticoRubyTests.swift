@@ -123,9 +123,29 @@ private func rubies(_ attributed: NSAttributedString) -> [(base: String, range: 
 
 // MARK: - Serialize
 
-@Test func serializeEmitsExplicitBaseForm() {
+@Test func serializeOmitsBaseMarkForAutoDetectableKanjiBase() {
+	// Minimal form: a pure-kanji base auto-detects, so no ｜ (matches how authors write).
 	let s = PorticoRuby.parse("漢字《かんじ》")
-	#expect(PorticoRuby.serialize(s) == "｜漢字《かんじ》")
+	#expect(PorticoRuby.serialize(s) == "漢字《かんじ》")
+}
+
+@Test func serializeKeepsBaseMarkForNonKanjiBase() {
+	// Auto-detection only finds kanji runs, so a non-kanji base needs the explicit ｜.
+	let s = PorticoRuby.parse("｜Portico《ポルティコ》")
+	#expect(PorticoRuby.serialize(s) == "｜Portico《ポルティコ》")
+}
+
+@Test func serializeKeepsBaseMarkWhenPlainKanjiPrecedesTheBase() {
+	// 東 is plain; ruby is only on 京都. Without ｜, auto-detect would swallow 東 into the base,
+	// so the mark must stay — decided by the self-verifying re-parse, not a hand rule.
+	let s = PorticoRuby.parse("東｜京都《きょうと》")
+	#expect(PorticoRuby.serialize(s) == "東｜京都《きょうと》")
+}
+
+@Test func serializeOmitsBaseMarkForIterationMark() {
+	// 々 counts as kanji for auto-detection, so 人々 needs no ｜.
+	let s = PorticoRuby.parse("人々《ひとびと》")
+	#expect(PorticoRuby.serialize(s) == "人々《ひとびと》")
 }
 
 @Test func serializeLeavesPlainTextUntouched() {
@@ -134,8 +154,9 @@ private func rubies(_ attributed: NSAttributedString) -> [(base: String, range: 
 }
 
 @Test func serializeHandlesMultipleAndAdjacentGroups() {
+	// Back-to-back kanji groups need no ｜: the first group's 》 floors the second's auto-scan.
 	let s = PorticoRuby.parse("東京《とうきょう》大学《だいがく》へ")
-	#expect(PorticoRuby.serialize(s) == "｜東京《とうきょう》｜大学《だいがく》へ")
+	#expect(PorticoRuby.serialize(s) == "東京《とうきょう》大学《だいがく》へ")
 }
 
 @Test func roundTripIsSemanticallyStable() {
