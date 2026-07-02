@@ -9,17 +9,19 @@ and iOS uses `UIView`/`UITextInput` + `UITextInteraction`.
 
 | Capability | macOS | iOS | Notes |
 |---|---|---|---|
-| Draw / hit-test / drag-select | ✅ mouse | ✅ tap + gestures | |
+| Draw / hit-test / drag-select | ✅ mouse + double-click word-select | ✅ tap + gestures | macOS word-select via `wordRange(at:)` |
 | IME marked text (set/unmark) | ✅ | ✅ | |
-| Insert / delete | ✅ | ✅ | |
+| Insert / delete | ✅ | ✅ | grapheme-cluster–aware `deleteBackward` |
 | Arrow-key caret navigation | ✅ | ✅ | iOS via `UIKeyCommand` |
 | Shift+arrow selection | ✅ | ✅ | |
 | Selection-rect geometry | ✅ | ✅ | shared `selectionRects(for:)` |
 | Native selection **handles / loupe / edit menu** | n/a (custom-drawn) | ✅ horizontal · ⚠️ vertical | via `UITextInteraction`; vertical is UIKit-limited (§3) |
 | Caret rendering | ✅ | ✅ | vertical is engine-drawn on iOS (§3) |
+| Selection stays valid after programmatic edit / orientation flip | ✅ (engine redraws) | ✅ | iOS refreshes `UITextInteraction` via `inputDelegate` (§5) |
 | Vertical IME candidate placement | ✅ | ✅ | system-placed via `firstRect(for:)` (§4) |
+| Ruby editing (apply/edit/remove, inline, geometry) | ✅ | ✅ | see `RubyEditing-Design.md` |
 
-Input and selection are at parity. The remaining gaps are iOS **vertical-text**
+Input, selection, and ruby editing are at parity. The remaining gaps are iOS **vertical-text**
 rendering details that stem from UIKit limitations, documented below.
 
 ## 2. Rendering ownership
@@ -72,7 +74,18 @@ a correct vertical column rect (from the engine's vertical-aware
 the candidate list correctly beside the column. **No code change needed** — the
 earlier "vertical IME candidate placement" parity item was false parity.
 
-## 5. Minor / non-actionable
+## 5. Selection sync after programmatic changes
+
+A programmatic text change (e.g. `setRuby`) or an orientation flip reflows the layout, so a
+live selection's **geometry** changes even though its range doesn't. On **macOS** the engine
+draws the selection, so it re-renders correctly on `setNeedsDisplay`. On **iOS** the selection
+UI is `UITextInteraction`'s and is **cached** — it only refreshes on `inputDelegate`
+notification. So `PorticoView.updateUIView` brackets external changes: `textWillChange` /
+`textDidChange` around a text update, and `selectionWillChange` / `selectionDidChange` around an
+orientation change, so UIKit re-queries handle geometry instead of leaving handles stale. The
+`text != …` guard means these fire only on genuine external changes, not typing round-trips.
+
+## 6. Minor / non-actionable
 
 - **`baseWritingDirection`** returns `.leftToRight` always. `NSWritingDirection` has no
   vertical value, so there is no more-correct return; verticality is conveyed via
@@ -80,7 +93,7 @@ earlier "vertical IME candidate placement" parity item was false parity.
 - **`firstRect(for:)`** returns the first intersecting line segment of a range — correct
   per the "first rectangle" contract, not whole-range geometry.
 
-## 6. Future upgrade path
+## 7. Future upgrade path
 
 The sanctioned long-term fix for the vertical caret (and potentially handles) is
 **iOS 17+ `UITextSelectionDisplayInteraction` with a custom `cursorView`** — supply a

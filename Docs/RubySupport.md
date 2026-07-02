@@ -1,6 +1,7 @@
 # Ruby (Furigana) Support — Spec
 
-Status: **Design** · Scope: **Display + Authoring** (live-editing deferred)
+Status: **Implemented** · Scope: **Display + Authoring + Editing** — the editing model
+(apply/edit/remove, inline conversion, geometry) is specified in `Docs/RubyEditing-Design.md`.
 
 ## 1. Goal
 
@@ -139,17 +140,17 @@ is deferred (it would complicate the vertical `CTFrameDraw` path).
 
 ## 6. Out of scope (v1)
 
-Deferred to a future **editing** phase:
+**Editing is now implemented** — apply/edit/remove (`setRuby`), inline notation conversion,
+and geometry for tap/popover editing; see `Docs/RubyEditing-Design.md`. The chosen model is a
+**hybrid**: the base is editable text, the reading a whole-value attribute (not an atomic
+group), and inserting at a group boundary is plain text.
 
-- Atomic-group deletion (deleting one base char removing the whole reading).
-- Cursor-stepping policy across a ruby group.
-- Typing into / splitting a ruby base range.
-- Escaping of control characters.
-- Mono-ruby / jukugo-ruby (per-character readings, cross-base overhang).
-- Public styling knobs (alignment / overhang / scale).
+Still deferred:
 
-The annotation survives in the attributed string under edits; we just don't yet
-*guarantee* sensible behavior when a base range is partially edited.
+- **Escaping** of control characters — `《`, `》`, `｜` in a base/reading don't round-trip.
+- **Mono-ruby / jukugo-ruby** (per-character readings, cross-base overhang).
+- **Public styling knobs** (alignment / overhang / scale).
+- **Undo** integration; full **popover placement** (edge-avoidance) in the Example.
 
 ## 7. Phasing
 
@@ -158,14 +159,18 @@ The annotation survives in the attributed string under edits; we just don't yet
    ✅ Visual rendering verified — macOS Example app, horizontal + vertical.
 2. **Serialize** — round-trip to text → persistence.
    ✅ `PorticoRuby.serialize` + round-trip tests done.
-3. **Editing semantics** — atomic group, cursor policy. (Future, separate spec.)
+3. **Editing** — apply/edit/remove (`setRuby`), inline notation conversion, tap/popover
+   geometry. ✅ Done; hybrid model (editable base, whole-value reading) specified in
+   `Docs/RubyEditing-Design.md`.
 
 ## 8. Files
 
-- `Sources/Portico/PorticoRuby.swift` — parser, serializer, internal attach
-  primitive.
+- `Sources/Portico/PorticoRuby.swift` — parser, serializer, attach primitive, and the
+  editing primitives (`setRuby`, `rubyGroup(at:)`, `rubyGroups(in:)`, `inlineRubyMatch`).
 - `Tests/PorticoTests/PorticoRubyTests.swift` — parse, serialize, round-trip,
   §3.1 edge cases, and uniform line-to-line pitch.
+- `Tests/PorticoTests/PorticoRubyEditingTests.swift` — editing: boundary rule, primitives,
+  post-edit round-trip, inline conversion, geometry.
 - `Tests/PorticoTests/PorticoRubyClientTests.swift` — public-API (non-`@testable`)
   smoke tests proving ruby is reachable from client code.
-- Example app: a sample string demonstrating ruby in both orientations.
+- Example app: renders ruby in both orientations and demonstrates the select→reading editor.

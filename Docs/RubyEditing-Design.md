@@ -1,9 +1,8 @@
 # Ruby (Furigana) Editing — Design (Phase 3)
 
-> **Status:** design draft, not yet implemented. Consolidates the maintainer's and
-> three review agents' input. Focus is **what**, not how. Method signatures here are
-> the *interface contract* (a framework's public surface is part of its "what"), not
-> implementation.
+> **Status:** **implemented (Phase 3 complete)** — see §10 for per-step status. Consolidates
+> the maintainer's and three review agents' input. Method signatures here are the *interface
+> contract*; this doc remains the spec of record for the editing model.
 
 ## 1. Purpose & framing
 
@@ -186,26 +185,38 @@ undefined.)
 - **Invariant (§3) holds** after every mutation and normalization.
 - **Boundary/inheritance rule (§6)** covered by tests.
 
-## 10. Suggested implementation order (simple-first)
+## 10. Implementation status (order was simple-first)
 
-1. **Fix the insertion/inheritance boundary rule** (§6) — isolated, correct regardless.
-2. **Primitives** — `setRuby` + `rubyGroup(at:)` / `rubyGroups(in:)` + tests (pure, no UI).
-3. **Post-edit integrity** (§6) — turned out the attribute store already preserves the
-   invariant under edits, so no explicit normalization pass is needed; locked by round-trip tests.
-4. **Geometry primitives** — `rubyGroup(at point:)`, `rects(forRubyGroupContaining:)`,
+**Phase 3 complete** — all six steps implemented, tested, and pushed. Review follow-ups noted inline.
+
+1. ✅ **Insertion/inheritance boundary rule** (§6) — incl. IME marked text.
+2. ✅ **Primitives** — `setRuby` + `rubyGroup(at:)` / `rubyGroups(in:)` (pure, tested).
+3. ✅ **Post-edit integrity** (§6) — the attribute store already preserves the invariant; no
+   normalization pass, locked by round-trip tests.
+4. ✅ **Geometry primitives** — `rubyGroup(at point:)` (**containment** hit-testing — follow-up
+   fix so a tap on a one-kanji base's trailing half still hits), `rects(forRubyGroupContaining:)`,
    `anchorRect(forRubyGroupContaining:)`.
-5. **Inline notation conversion** (§7a) with the committed-text/undo contract.
-6. **Example demo** — select → reading, per §7.1 (inspector on macOS, popover on iOS).
+5. ✅ **Inline notation conversion** (§7a) — auto-base stops at an existing group; explicit `｜`
+   crosses it (follow-up fix, so a new inline ruby can't swallow a neighbour).
+6. ✅ **Example demo** — select → reading editor; on iOS/macOS the editor anchors to the group
+   via `anchorRect`. This is the §5/§7.1 **acceptance test — executed and passed** (vertical
+   included), which is how we know the geometry API is genuinely client-buildable.
 
-## 11. Open questions (for further discussion)
+Adjacent non-ruby fixes done in the same phase: grapheme-aware `deleteBackward`, iOS selection
+UI refresh on programmatic text change / orientation flip, macOS double-click word-select.
 
-- **Where does `setRuby` live?** §5's shape mirrors the pure `parse`/`serialize`, but
-  interactive editing also needs an **engine-level** mutator that runs §6 normalization,
-  relayout, and `textDidChange`. Likely **both** — a pure core transform plus a thin engine
-  wrapper — but decide consciously, not by accident during implementation.
-- Undo granularity for inline conversion and `setRuby` — one step or per-char?
-- Reading normalization on input (full-width/half-width kana) — framework or client? *(Trimming
-  and the zero-length-range no-op are now decided — see §5.)*
+## 11. Open questions
+
+Resolved during implementation:
+- **Where does `setRuby` live?** — **Both**, as anticipated: pure ops on `PorticoRuby`
+  (`setRuby` / queries / `inlineRubyMatch`) plus engine-level geometry (`anchorRect…`) and the
+  inline-conversion hook. No separate normalization pass was needed (§3, §10 step 3).
+- Trimming (store as-given) and the zero-length-range no-op — decided (§5).
+
+Genuinely still open:
+- **Undo granularity** for inline conversion and `setRuby` — one step or per-char? (No undo
+  manager is wired to the engine yet.)
+- **Reading normalization** on input (full-width/half-width kana) — framework or client?
 
 ## 12. Parked ideas (future, not v1)
 
