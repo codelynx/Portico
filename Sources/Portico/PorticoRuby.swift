@@ -199,7 +199,10 @@ public enum PorticoRuby {
 	private static let rubyOpenUnit: unichar = ("《" as NSString).character(at: 0)
 	private static let rubyCloseUnit: unichar = ("》" as NSString).character(at: 0)
 	private static let baseMarkUnit: unichar = ("｜" as NSString).character(at: 0)
-	private static let newlineUnit: unichar = 0x000A
+
+	private static func isLineBreakUnit(_ u: unichar) -> Bool {
+		u == 0x000A || u == 0x000D || u == 0x2028 || u == 0x2029
+	}
 
 	/// A complete inline ruby run `[｜]base《reading》`, detected at a just-typed `》`.
 	public struct InlineRubyMatch: Equatable {
@@ -215,7 +218,13 @@ public enum PorticoRuby {
 	/// `《`, the reading, and the base — explicit `｜base`, else a trailing run of kanji before
 	/// `《` (same rules as `parse`). Returns nil if there's no matching `《` on the line, or the
 	/// reading or base is empty — the caller then leaves the typed text literal.
-	public static func inlineRubyMatch(in string: NSString, closingAt closeIndex: Int) -> InlineRubyMatch? {
+	///
+	/// `isRuby(index)` reports whether the character at `index` already belongs to a ruby group.
+	/// The **auto-base** scan stops at such a character, so a new inline ruby typed right after
+	/// an existing group can't swallow it. The **explicit `｜`** base intentionally crosses
+	/// existing groups — the user declared that base, and `setRuby` re-bases over the overlap.
+	public static func inlineRubyMatch(in string: NSString, closingAt closeIndex: Int,
+									   isRuby: (Int) -> Bool = { _ in false }) -> InlineRubyMatch? {
 		guard closeIndex >= 0, closeIndex < string.length,
 			  string.character(at: closeIndex) == rubyCloseUnit else { return nil }
 
@@ -225,28 +234,29 @@ public enum PorticoRuby {
 		while i >= 0 {
 			let c = string.character(at: i)
 			if c == rubyOpenUnit { openIndex = i; break }
-			if c == rubyCloseUnit || c == newlineUnit { return nil }
+			if c == rubyCloseUnit || isLineBreakUnit(c) { return nil }
 			i -= 1
 		}
 		guard openIndex >= 0, closeIndex - openIndex - 1 > 0 else { return nil }
 		let reading = string.substring(with: NSRange(location: openIndex + 1, length: closeIndex - openIndex - 1))
 
-		// Base: nearest explicit ｜ before 《 (not crossing a bracket/newline), else trailing kanji.
+		// Base: nearest explicit ｜ before 《 (not crossing a bracket/line break), else trailing kanji.
 		var markIndex: Int?
 		var e = openIndex - 1
 		while e >= 0 {
 			let c = string.character(at: e)
 			if c == baseMarkUnit { markIndex = e; break }
-			if c == rubyOpenUnit || c == rubyCloseUnit || c == newlineUnit { break }
+			if c == rubyOpenUnit || c == rubyCloseUnit || isLineBreakUnit(c) { break }
 			e -= 1
 		}
 
 		let baseStart: Int
 		if let m = markIndex {
-			baseStart = m + 1
+			baseStart = m + 1 // explicit base — spans whatever the user marked, incl. existing ruby
 		} else {
+			// Auto base: trailing kanji run, but stop before an existing ruby group.
 			var s = openIndex
-			while s - 1 >= 0, isKanjiUnit(string.character(at: s - 1)) { s -= 1 }
+			while s - 1 >= 0, isKanjiUnit(string.character(at: s - 1)), !isRuby(s - 1) { s -= 1 }
 			baseStart = s
 		}
 		guard baseStart < openIndex else { return nil } // empty base → leave literal

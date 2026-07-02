@@ -422,3 +422,36 @@ private func type(_ s: String, into e: PorticoTextLayoutEngine) { for ch in s { 
 	#expect(e.attributedString.attribute(key, at: 0, effectiveRange: nil) as? Int == 7) // base attr survived
 	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "ねこ")
 }
+
+@Test func inlineConversionNextToExistingGroupKeepsBoth() {
+	// Regression: typing a new ruby right after an existing group must not swallow it.
+	let e = editEngine("漢字《かんじ》") // 漢字 group [0,2)
+	e.cursorIndex = e.attributedString.length
+	type("猫《ねこ》", into: e)
+	#expect(e.attributedString.string == "漢字猫")
+	let groups = PorticoRuby.rubyGroups(in: NSRange(location: 0, length: e.attributedString.length), of: e.attributedString)
+	#expect(groups.count == 2)
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "かんじ") // intact
+	#expect(PorticoRuby.rubyGroup(at: 2, in: e.attributedString)?.reading == "ねこ")
+}
+
+@Test func autoBaseSpansPlainKanjiRun() {
+	// With no prior ruby, auto-base still takes the whole trailing kanji run (spec rule).
+	let e = emptyEngine()
+	type("本猫《ねこ》", into: e)
+	#expect(e.attributedString.string == "本猫")
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.base == NSRange(location: 0, length: 2))
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "ねこ")
+}
+
+@Test func inlineMatchAutoBaseStopsAtRuby() {
+	// Auto-base stops before an already-ruby char (predicate says 漢字 are in a group).
+	let m = PorticoRuby.inlineRubyMatch(in: "漢字猫《ねこ》" as NSString, closingAt: 6, isRuby: { $0 < 2 })
+	#expect(m?.baseRange == NSRange(location: 2, length: 1)) // 猫 only
+}
+
+@Test func inlineMatchExplicitBaseCrossesRuby() {
+	// Explicit ｜ spans whatever the user marked, even across an already-ruby char.
+	let m = PorticoRuby.inlineRubyMatch(in: "｜漢字《まとめ》" as NSString, closingAt: 7, isRuby: { $0 == 2 })
+	#expect(m?.baseRange == NSRange(location: 1, length: 2)) // 漢字
+}

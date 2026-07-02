@@ -258,7 +258,11 @@ public class PorticoTextLayoutEngine {
 	/// cursor (end of the base) or `cursor` unchanged when there's nothing to convert.
 	private func convertInlineRuby(in string: NSMutableAttributedString, cursor: Int) -> Int {
 		guard cursor > 0,
-			  let match = PorticoRuby.inlineRubyMatch(in: string.string as NSString, closingAt: cursor - 1)
+			  let match = PorticoRuby.inlineRubyMatch(
+				in: string.string as NSString,
+				closingAt: cursor - 1,
+				// Auto-base must not swallow a character already in a ruby group.
+				isRuby: { string.attribute(self.rubyAttributeKey, at: $0, effectiveRange: nil) != nil })
 		else { return cursor }
 		// Keep the base with its attributes, drop the marks + reading, then attach the ruby.
 		let base = NSMutableAttributedString(attributedString: string.attributedSubstring(from: match.baseRange))
