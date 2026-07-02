@@ -23,7 +23,7 @@ struct ExampleApp: App {
 		// (no-ops when there's no selection). iOS reaches the same action via the native edit menu.
 		.commands {
 			CommandGroup(after: .pasteboard) {
-				Button("ルビ…") {
+				Button("Ruby…") {
 					NSApp.sendAction(#selector(PorticoTextView.performSelectionMenuAction(_:)), to: nil, from: nil)
 				}
 				.keyboardShortcut("r", modifiers: [.command, .shift])

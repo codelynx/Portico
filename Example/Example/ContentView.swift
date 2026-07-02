@@ -20,12 +20,10 @@ struct ContentView: View {
 	@State private var reading: String = ""
 	@FocusState private var readingFieldFocused: Bool
 
-	/// One in-flight ruby edit: the target range, where to anchor the popover, and whether the
-	/// selection exactly matches an existing group (→ prefilled reading + an explicit Remove).
+	/// One in-flight ruby edit: the target range and where to anchor the popover.
 	private struct RubyEdit {
 		var range: NSRange
 		var anchor: CGRect
-		var isExistingGroup: Bool
 	}
 
 	var body: some View {
@@ -37,12 +35,12 @@ struct ContentView: View {
 			.pickerStyle(.segmented)
 			.frame(maxWidth: 300)
 
-			// One flow (design §7.2): select any text → native edit action (ルビ…) → this popover.
+			// One flow (design §7.2): select any text → native edit action (Ruby…) → this popover.
 			// The framework provides the menu item via the onSelectionMenuAction seam and hands
 			// back the selection range + first-segment anchor; the popover UI is ours.
 			// (Inline notation — typing 漢字《かんじ》 — also works directly in the view.)
 			PorticoView(text: $text, orientation: orientation,
-						onSelectionMenuAction: PorticoSelectionMenuAction(title: "ルビ…") { range, anchor in
+						onSelectionMenuAction: PorticoSelectionMenuAction(title: "Ruby…") { range, anchor in
 							beginEditing(range: range, anchor: anchor)
 						})
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -78,20 +76,15 @@ struct ContentView: View {
 
 	private func rubyEditor(_ edit: RubyEdit) -> some View {
 		HStack(spacing: 8) {
-			// Type/edit the reading and commit (Enter or ✓) to set it; an empty commit removes.
-			TextField("ふりがな (reading)", text: $reading)
+			// The field is the state: type a ruby and commit (Enter or ✓) to set it; clear the
+			// field and commit to remove the ruby. One action covers set / edit / remove.
+			TextField("ruby", text: $reading)
 				.textFieldStyle(.roundedBorder)
 				.focused($readingFieldFocused)
 				.onAppear { readingFieldFocused = true } // type immediately — no extra tap
 				.onSubmit { apply() }
 			Button { apply() } label: { Image(systemName: "checkmark") }
-				.help("Set reading")
-			// Editing an existing group also offers explicit removal (destruction stays visible,
-			// not only an empty-field side effect).
-			if edit.isExistingGroup {
-				Button(role: .destructive) { remove() } label: { Image(systemName: "trash") }
-					.help("Remove ruby")
-			}
+				.help("Apply — a cleared field removes the ruby")
 			Button { editing = nil } label: { Image(systemName: "xmark") }
 				.help("Cancel")
 		}
@@ -102,24 +95,18 @@ struct ContentView: View {
 	/// partial / spanning) starts empty and adds or replaces over the selection on apply.
 	private func beginEditing(range: NSRange, anchor: CGRect) {
 		guard editing == nil else { return } // ignore re-trigger (e.g. ⇧⌘R) while the editor is open
+		// Prefill only when the selection exactly matches an existing group's base — that's an edit.
 		if let group = PorticoRuby.rubyGroup(at: range.location, in: text), group.base == range {
 			reading = group.reading
-			editing = RubyEdit(range: range, anchor: anchor, isExistingGroup: true)
 		} else {
 			reading = ""
-			editing = RubyEdit(range: range, anchor: anchor, isExistingGroup: false)
 		}
+		editing = RubyEdit(range: range, anchor: anchor)
 	}
 
 	private func apply() {
 		guard let edit = editing else { return }
-		setRuby(reading.isEmpty ? nil : reading, for: edit.range) // empty commit removes (shortcut)
-		editing = nil
-	}
-
-	private func remove() {
-		guard let edit = editing else { return }
-		setRuby(nil, for: edit.range)
+		setRuby(reading.isEmpty ? nil : reading, for: edit.range) // cleared field removes the ruby
 		editing = nil
 	}
 

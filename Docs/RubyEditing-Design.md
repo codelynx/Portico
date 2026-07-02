@@ -196,17 +196,17 @@ deliberate **touch-up** path, so the one extra tap is appropriate.
   no ruby menu item. The `Ruby…` label and the popover itself stay **client-owned** (Example).
   Keeps §2's framework-first principle: Portico never mandates editing UI.
 - **One surface, three ops by prefill:**
-  - Selection **exactly equals** one group's base → **edit** (field prefilled; explicit
-    **Remove** control shown).
+  - Selection **exactly equals** one group's base → **edit** (field prefilled).
   - Otherwise (plain / partial-inside-group / spanning groups) → **add or replace over the
     selection** (empty field); apply calls `setRuby` over the selection under its existing
     replace-on-intersect contract (§5). A partially-selected group is never silently *edited* —
     the field opens empty (the signal), and applying deliberately replaces the intersected group
     under §5's contract. Tap-to-edit already snaps to the full group (containment hit-test), so
     the common edit case lands on exact-match.
-  - **Remove:** empty-field + confirm stays as a shortcut, but an explicit Remove is shown
-    whenever the popover opens prefilled (destruction must be visible, not just an empty-field
-    side effect).
+  - **Remove:** clear the field and apply. One control (Apply) covers set / edit / remove; the
+    field *is* the state. (The review round argued for an additional explicit Remove button so
+    destruction is visible; the maintainer preferred the single clear-and-apply affordance — a
+    deliberate taste call, with the checkmark's tooltip noting that a cleared field removes.)
 - **Anchor geometry — `anchorRectForSelection()` (new engine helper).** This is a **popover-anchor
   contract, not a selection-bounds contract**: it returns the rect of the selection's **first
   segment in document/layout order** (its run on the first line horizontally; the first column
