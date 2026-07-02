@@ -105,11 +105,21 @@ persisted `layoutSize`).
 
 **Stated fallback (review):** `CTFramesetterSuggestFrameSizeWithConstraints` is historically
 unreliable under forced `minimum/maximumLineHeight` — exactly what the uniform ruby pitch
-applies. The tightness acceptance below detects it; the fallback is *stronger* than the
-primary under uniform pitch: frame the string into a huge block extent, count lines → block
-extent = `lineCount × pitch` (+ inline extent from the longest line/column's typographic
-extent — width in horizontal, height in vertical). Ship the fallback if the primary fails
+applies. The tightness acceptance below detects it; ship a fallback if the primary fails
 acceptance; don't stall.
+**AS BUILT (post code review):** the unreliability materialized exactly as predicted (vertical
+block axis overreported by >2pt; caught by the tightness test). Shipped as **end-verify both
+directions + binary-search tighten**: (1) the suggestion is end-verified and repaired UP if it
+under-reports (the historically reported failure mode; sanity-bounded, debug-asserted); (2) the
+block axis is binary-searched down between the `lineCount × pitch` floor and the known-fitting
+size (fit is monotone; Core Text adds sub-point per-line leading pure pitch arithmetic
+misses). The tighten is skipped as a PERF guard — not correctness, end-verification guarantees
+fit regardless — when caller block spacing (`paragraphSpacing`/`paragraphSpacingBefore`/
+`lineSpacing`, which CT applies even under clamped line heights) puts the floor uselessly low
+(`hasBlockSpacingBeyondPitch`). Non-finite/non-positive `inlineExtent` = unconstrained
+(documented). Also: the "reflects paragraph alignment" acceptance became a documented
+**alignment-neutrality** claim — intrinsic measurement doesn't change with alignment; that's
+the truthful semantics.
 
 **Acceptance / tests:**
 - For H and V, with and without ruby (incl. long-reading ruby): layout at `measuredSize()`
