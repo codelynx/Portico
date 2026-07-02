@@ -3,9 +3,17 @@ import Foundation
 #if os(macOS)
 import AppKit
 
-public class PorticoTextView: NSView {
+public class PorticoTextView: NSView, NSMenuItemValidation {
 	public let layoutEngine: PorticoTextLayoutEngine
-	
+
+	/// Optional client-supplied selection action (design §7.2 seam). When set, a menu item
+	/// titled `title` is added to the right-click context menu whenever there's a non-empty
+	/// selection; choosing it calls `handler` with the current selection range and its
+	/// first-segment anchor rect (top-left view coords). `nil` → no item (opt-out default). The
+	/// framework owns the menu plumbing; the label + whatever UI the handler shows are the
+	/// client's (e.g. a ruby-reading popover).
+	public var onSelectionMenuAction: (title: String, handler: (NSRange, CGRect) -> Void)?
+
 	public init(frame: NSRect, layoutEngine: PorticoTextLayoutEngine) {
 		self.layoutEngine = layoutEngine
 		super.init(frame: frame)
@@ -91,6 +99,40 @@ public class PorticoTextView: NSView {
 			perform(selector)
 		}
 	}
+
+	// MARK: - Selection context menu (design §7.2 seam)
+
+	/// Right-click over a non-empty selection offers the client's selection action, if any.
+	/// Requires an existing selection (right-click doesn't create one) — the intended flow is
+	/// select (drag / double-click) → right-click → action.
+	public override func menu(for event: NSEvent) -> NSMenu? {
+		guard let action = onSelectionMenuAction,
+			  let selection = layoutEngine.selectionRange, selection.length > 0 else { return nil }
+		let menu = NSMenu()
+		let item = NSMenuItem(title: action.title,
+							  action: #selector(performSelectionMenuAction(_:)), keyEquivalent: "")
+		item.target = self
+		menu.addItem(item)
+		return menu
+	}
+
+	/// Target of both the context-menu item and any app main-menu command (e.g. `Edit ▸ Ruby…`)
+	/// wired to this selector via the responder chain. Re-reads the selection at invocation time.
+	@objc public func performSelectionMenuAction(_ sender: Any?) {
+		guard let action = onSelectionMenuAction,
+			  let selection = layoutEngine.selectionRange, selection.length > 0 else { return }
+		action.handler(selection, layoutEngine.anchorRectForSelection() ?? .zero)
+	}
+
+	/// Enable an app main-menu command targeting `performSelectionMenuAction:` only when a
+	/// selection exists (context-menu items are already gated by `menu(for:)`).
+	public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+		if menuItem.action == #selector(performSelectionMenuAction(_:)) {
+			return onSelectionMenuAction != nil
+				&& (layoutEngine.selectionRange?.length ?? 0) > 0
+		}
+		return true
+	}
 }
 
 extension PorticoTextView: @preconcurrency NSTextInputClient {
@@ -157,9 +199,17 @@ extension PorticoTextView: @preconcurrency NSTextInputClient {
 import UIKit
 
 public class PorticoTextView: UIView, UITextInput {
-	
+
 	public let layoutEngine: PorticoTextLayoutEngine
-	
+
+	/// Optional client-supplied selection action (design §7.2 seam). When set, an item titled
+	/// `title` is appended to the native selection edit menu (alongside Copy / Look Up) whenever
+	/// there's a non-empty selection; choosing it calls `handler` with the current selection range
+	/// and its first-segment anchor rect (top-left view coords). `nil` → no item (opt-out default).
+	/// Added through `editMenu(for:suggestedActions:)` — the hook `UITextInteraction` already
+	/// calls — so it augments the existing menu rather than installing a rival interaction.
+	public var onSelectionMenuAction: (title: String, handler: (NSRange, CGRect) -> Void)?
+
 	public init(frame: CGRect, layoutEngine: PorticoTextLayoutEngine) {
 		self.layoutEngine = layoutEngine
 		super.init(frame: frame)
@@ -288,6 +338,24 @@ public class PorticoTextView: UIView, UITextInput {
 		layoutEngine.deleteBackward()
 		inputDelegate?.textDidChange(self)
 		setNeedsDisplay()
+	}
+
+	// MARK: - Selection edit menu (design §7.2 seam)
+
+	/// Augment the native selection menu with the client's action (iOS 16+). Returning
+	/// `suggestedActions + [ours]` keeps Copy / Look Up / … and appends our item; this is the
+	/// hook `UITextInteraction` already calls, so we never install a competing menu interaction.
+	public func editMenu(for textRange: UITextRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+		guard let action = onSelectionMenuAction,
+			  let selection = layoutEngine.selectionRange, selection.length > 0 else {
+			return UIMenu(children: suggestedActions)
+		}
+		let item = UIAction(title: action.title) { [weak self] _ in
+			guard let self,
+				  let sel = self.layoutEngine.selectionRange, sel.length > 0 else { return }
+			action.handler(sel, self.layoutEngine.anchorRectForSelection() ?? .zero)
+		}
+		return UIMenu(children: suggestedActions + [item])
 	}
 
 	// MARK: - UITextInput

@@ -6,13 +6,16 @@ public struct PorticoView: NSViewRepresentable {
 	public var orientation: PorticoLayoutOrientation
 	private var selectedRange: Binding<NSRange?>?
 	private var rubyGroupAnchor: Binding<CGRect?>?
+	private var onSelectionMenuAction: (title: String, handler: (NSRange, CGRect) -> Void)?
 
 	public init(text: Binding<NSAttributedString>, orientation: PorticoLayoutOrientation = .horizontal,
-				selectedRange: Binding<NSRange?>? = nil, rubyGroupAnchor: Binding<CGRect?>? = nil) {
+				selectedRange: Binding<NSRange?>? = nil, rubyGroupAnchor: Binding<CGRect?>? = nil,
+				onSelectionMenuAction: (title: String, handler: (NSRange, CGRect) -> Void)? = nil) {
 		self._text = text
 		self.orientation = orientation
 		self.selectedRange = selectedRange
 		self.rubyGroupAnchor = rubyGroupAnchor
+		self.onSelectionMenuAction = onSelectionMenuAction
 	}
 
 	public func makeNSView(context: Context) -> PorticoTextView {
@@ -31,10 +34,13 @@ public struct PorticoView: NSViewRepresentable {
 				anchorBinding?.wrappedValue = engine?.rubyAnchorRectForSelection()
 			}
 		}
-		return PorticoTextView(frame: .zero, layoutEngine: engine)
+		let view = PorticoTextView(frame: .zero, layoutEngine: engine)
+		view.onSelectionMenuAction = onSelectionMenuAction
+		return view
 	}
-	
+
 	public func updateNSView(_ nsView: PorticoTextView, context: Context) {
+		nsView.onSelectionMenuAction = onSelectionMenuAction // refresh each render to avoid a stale closure
 		var layoutChanged = false
 		if nsView.layoutEngine.attributedString != text {
 			nsView.layoutEngine.update(attributedString: text)
@@ -60,13 +66,16 @@ public struct PorticoView: UIViewRepresentable {
 	public var orientation: PorticoLayoutOrientation
 	private var selectedRange: Binding<NSRange?>?
 	private var rubyGroupAnchor: Binding<CGRect?>?
+	private var onSelectionMenuAction: (title: String, handler: (NSRange, CGRect) -> Void)?
 
 	public init(text: Binding<NSAttributedString>, orientation: PorticoLayoutOrientation = .horizontal,
-				selectedRange: Binding<NSRange?>? = nil, rubyGroupAnchor: Binding<CGRect?>? = nil) {
+				selectedRange: Binding<NSRange?>? = nil, rubyGroupAnchor: Binding<CGRect?>? = nil,
+				onSelectionMenuAction: (title: String, handler: (NSRange, CGRect) -> Void)? = nil) {
 		self._text = text
 		self.orientation = orientation
 		self.selectedRange = selectedRange
 		self.rubyGroupAnchor = rubyGroupAnchor
+		self.onSelectionMenuAction = onSelectionMenuAction
 	}
 
 	public func makeUIView(context: Context) -> PorticoTextView {
@@ -85,10 +94,13 @@ public struct PorticoView: UIViewRepresentable {
 				anchorBinding?.wrappedValue = engine?.rubyAnchorRectForSelection()
 			}
 		}
-		return PorticoTextView(frame: .zero, layoutEngine: engine)
+		let view = PorticoTextView(frame: .zero, layoutEngine: engine)
+		view.onSelectionMenuAction = onSelectionMenuAction
+		return view
 	}
-	
+
 	public func updateUIView(_ uiView: PorticoTextView, context: Context) {
+		uiView.onSelectionMenuAction = onSelectionMenuAction // refresh each render to avoid a stale closure
 		var layoutChanged = false
 		if uiView.layoutEngine.attributedString != text {
 			// A programmatic text change from outside the input system (e.g. setRuby). Bracket
