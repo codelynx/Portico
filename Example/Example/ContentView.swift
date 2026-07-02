@@ -18,6 +18,7 @@ struct ContentView: View {
 	@State private var orientation: PorticoLayoutOrientation = .horizontal
 	@State private var editing: RubyEdit?
 	@State private var reading: String = ""
+	@FocusState private var readingFieldFocused: Bool
 
 	/// One in-flight ruby edit: the target range, where to anchor the popover, and whether the
 	/// selection exactly matches an existing group (→ prefilled reading + an explicit Remove).
@@ -41,9 +42,9 @@ struct ContentView: View {
 			// back the selection range + first-segment anchor; the popover UI is ours.
 			// (Inline notation — typing 漢字《かんじ》 — also works directly in the view.)
 			PorticoView(text: $text, orientation: orientation,
-						onSelectionMenuAction: ("ルビ…", { range, anchor in
+						onSelectionMenuAction: PorticoSelectionMenuAction(title: "ルビ…") { range, anchor in
 							beginEditing(range: range, anchor: anchor)
-						}))
+						})
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 				.border(Color.gray)
 				.overlay(alignment: .topLeading) { rubyPopover }
@@ -80,6 +81,8 @@ struct ContentView: View {
 			// Type/edit the reading and commit (Enter or ✓) to set it; an empty commit removes.
 			TextField("ふりがな (reading)", text: $reading)
 				.textFieldStyle(.roundedBorder)
+				.focused($readingFieldFocused)
+				.onAppear { readingFieldFocused = true } // type immediately — no extra tap
 				.onSubmit { apply() }
 			Button { apply() } label: { Image(systemName: "checkmark") }
 				.help("Set reading")
@@ -98,6 +101,7 @@ struct ContentView: View {
 	/// matches an existing group's base (§7.2) — that's an edit. Any other selection (plain /
 	/// partial / spanning) starts empty and adds or replaces over the selection on apply.
 	private func beginEditing(range: NSRange, anchor: CGRect) {
+		guard editing == nil else { return } // ignore re-trigger (e.g. ⇧⌘R) while the editor is open
 		if let group = PorticoRuby.rubyGroup(at: range.location, in: text), group.base == range {
 			reading = group.reading
 			editing = RubyEdit(range: range, anchor: anchor, isExistingGroup: true)

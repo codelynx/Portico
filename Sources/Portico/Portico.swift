@@ -1,16 +1,31 @@
 import SwiftUI
 
+/// A client-supplied action for the text selection menu (design §7.2 seam). When set on
+/// `PorticoView`, Portico adds an item titled `title` to the native selection menu — macOS
+/// right-click / iOS edit menu — whenever there's a non-empty selection; choosing it calls
+/// `handler` with the selection range and its first-segment anchor rect (top-left view coords).
+/// A named type (not a tuple) so it can gain fields — icon, shortcut, enablement — without
+/// breaking call sites.
+public struct PorticoSelectionMenuAction {
+	public var title: String
+	public var handler: (NSRange, CGRect) -> Void
+	public init(title: String, handler: @escaping (NSRange, CGRect) -> Void) {
+		self.title = title
+		self.handler = handler
+	}
+}
+
 #if os(macOS)
 public struct PorticoView: NSViewRepresentable {
 	@Binding public var text: NSAttributedString
 	public var orientation: PorticoLayoutOrientation
 	private var selectedRange: Binding<NSRange?>?
 	private var rubyGroupAnchor: Binding<CGRect?>?
-	private var onSelectionMenuAction: (title: String, handler: (NSRange, CGRect) -> Void)?
+	private var onSelectionMenuAction: PorticoSelectionMenuAction?
 
 	public init(text: Binding<NSAttributedString>, orientation: PorticoLayoutOrientation = .horizontal,
 				selectedRange: Binding<NSRange?>? = nil, rubyGroupAnchor: Binding<CGRect?>? = nil,
-				onSelectionMenuAction: (title: String, handler: (NSRange, CGRect) -> Void)? = nil) {
+				onSelectionMenuAction: PorticoSelectionMenuAction? = nil) {
 		self._text = text
 		self.orientation = orientation
 		self.selectedRange = selectedRange
@@ -66,11 +81,11 @@ public struct PorticoView: UIViewRepresentable {
 	public var orientation: PorticoLayoutOrientation
 	private var selectedRange: Binding<NSRange?>?
 	private var rubyGroupAnchor: Binding<CGRect?>?
-	private var onSelectionMenuAction: (title: String, handler: (NSRange, CGRect) -> Void)?
+	private var onSelectionMenuAction: PorticoSelectionMenuAction?
 
 	public init(text: Binding<NSAttributedString>, orientation: PorticoLayoutOrientation = .horizontal,
 				selectedRange: Binding<NSRange?>? = nil, rubyGroupAnchor: Binding<CGRect?>? = nil,
-				onSelectionMenuAction: (title: String, handler: (NSRange, CGRect) -> Void)? = nil) {
+				onSelectionMenuAction: PorticoSelectionMenuAction? = nil) {
 		self._text = text
 		self.orientation = orientation
 		self.selectedRange = selectedRange

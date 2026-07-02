@@ -12,7 +12,7 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 	/// first-segment anchor rect (top-left view coords). `nil` → no item (opt-out default). The
 	/// framework owns the menu plumbing; the label + whatever UI the handler shows are the
 	/// client's (e.g. a ruby-reading popover).
-	public var onSelectionMenuAction: (title: String, handler: (NSRange, CGRect) -> Void)?
+	public var onSelectionMenuAction: PorticoSelectionMenuAction?
 
 	public init(frame: NSRect, layoutEngine: PorticoTextLayoutEngine) {
 		self.layoutEngine = layoutEngine
@@ -120,8 +120,9 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 	/// wired to this selector via the responder chain. Re-reads the selection at invocation time.
 	@objc public func performSelectionMenuAction(_ sender: Any?) {
 		guard let action = onSelectionMenuAction,
-			  let selection = layoutEngine.selectionRange, selection.length > 0 else { return }
-		action.handler(selection, layoutEngine.anchorRectForSelection() ?? .zero)
+			  let selection = layoutEngine.selectionRange, selection.length > 0,
+			  let anchor = layoutEngine.anchorRectForSelection() else { return }
+		action.handler(selection, anchor)
 	}
 
 	/// Enable an app main-menu command targeting `performSelectionMenuAction:` only when a
@@ -208,7 +209,7 @@ public class PorticoTextView: UIView, UITextInput {
 	/// and its first-segment anchor rect (top-left view coords). `nil` → no item (opt-out default).
 	/// Added through `editMenu(for:suggestedActions:)` — the hook `UITextInteraction` already
 	/// calls — so it augments the existing menu rather than installing a rival interaction.
-	public var onSelectionMenuAction: (title: String, handler: (NSRange, CGRect) -> Void)?
+	public var onSelectionMenuAction: PorticoSelectionMenuAction?
 
 	public init(frame: CGRect, layoutEngine: PorticoTextLayoutEngine) {
 		self.layoutEngine = layoutEngine
@@ -348,12 +349,13 @@ public class PorticoTextView: UIView, UITextInput {
 	public func editMenu(for textRange: UITextRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
 		guard let action = onSelectionMenuAction,
 			  let selection = layoutEngine.selectionRange, selection.length > 0 else {
-			return UIMenu(children: suggestedActions)
+			return nil // nil presents the default system menu unchanged (SDK contract)
 		}
 		let item = UIAction(title: action.title) { [weak self] _ in
 			guard let self,
-				  let sel = self.layoutEngine.selectionRange, sel.length > 0 else { return }
-			action.handler(sel, self.layoutEngine.anchorRectForSelection() ?? .zero)
+				  let sel = self.layoutEngine.selectionRange, sel.length > 0,
+				  let anchor = self.layoutEngine.anchorRectForSelection() else { return }
+			action.handler(sel, anchor)
 		}
 		return UIMenu(children: suggestedActions + [item])
 	}
