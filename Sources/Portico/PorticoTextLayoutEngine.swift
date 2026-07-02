@@ -1015,6 +1015,58 @@ public class PorticoTextLayoutEngine {
 		guard let textFrame = textFrame else { return 0 }
 		return CTFrameGetVisibleStringRange(textFrame).length
 	}
+
+	/// Maps a line-local rect (CTLine bounds coordinates: x along the line's advance
+	/// axis from the line origin, y baseline-relative with +y on the ascent side) into
+	/// engine (Core Text bottom-left) space. Orientation-aware: horizontal lines
+	/// advance +x with ascent up; vertical lines advance visually DOWN (engine −y)
+	/// with the ascent side extending toward engine +x — the same mapping
+	/// `selectionRects(for:)` uses.
+	func lineLocalToEngineRect(_ rect: CGRect, lineOrigin origin: CGPoint) -> CGRect {
+		if orientation == .vertical {
+			return CGRect(
+				x: origin.x + rect.minY,
+				y: origin.y - rect.maxX,
+				width: rect.height,
+				height: rect.width
+			)
+		} else {
+			return CGRect(
+				x: origin.x + rect.minX,
+				y: origin.y + rect.minY,
+				width: rect.width,
+				height: rect.height
+			)
+		}
+	}
+
+	/// Union of the laid-out glyphs' GEOMETRIC ink extents (Core Text glyph-path
+	/// bounds), INCLUDING ruby reading glyphs — which overhang the layout rect on
+	/// the ascent side (above the line in horizontal, right of the column in
+	/// vertical). Distinct from the layout `bounds`/`measuredSize` (the rect text
+	/// is framed into). Clients sizing raster tiles or selection chrome should
+	/// start from this rect, not the layout rect — and must still convert to their
+	/// target scale and outset for antialiasing (rasterization bleeds ~1px past
+	/// geometric bounds). Engine (Core Text bottom-left) coordinates. `.null` when
+	/// there is no layout OR no painted glyphs (empty or whitespace/newline-only
+	/// content).
+	public func inkBounds() -> CGRect {
+		guard let textFrame = textFrame else { return .null }
+		let lines = CTFrameGetLines(textFrame) as! [CTLine]
+		guard !lines.isEmpty else { return .null }
+		var origins = [CGPoint](repeating: .zero, count: lines.count)
+		CTFrameGetLineOrigins(textFrame, CFRangeMake(0, 0), &origins)
+
+		var union = CGRect.null
+		for (line, origin) in zip(lines, origins) {
+			let local = CTLineGetBoundsWithOptions(line, [.useGlyphPathBounds])
+			// Empty lines (e.g. "\n\n") yield null/empty glyph bounds — skip, or the
+			// union degrades.
+			guard !local.isNull, !local.isEmpty else { continue }
+			union = union.union(lineLocalToEngineRect(local, lineOrigin: origin))
+		}
+		return union
+	}
 	
 	private func drawSelection(in context: CGContext) {
 		guard let selectionRange = selectionRange else { return }

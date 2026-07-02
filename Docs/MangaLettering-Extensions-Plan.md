@@ -171,6 +171,13 @@ gates whichever path ships.
 long-reading ruby (reading wider than base) fully contained; empty-line documents don't
 degrade the union; V + H both covered.
 
+**AS BUILT: R2 resolved — ruby IS included in `CTLineGetBoundsWithOptions(.useGlyphPathBounds)`**
+(the ruby-growth geometry tests pass natively on both axes); the reading-extents fallback was
+never needed. The orientation-specific mapper (`lineLocalToEngineRect`, mirroring
+`selectionRects`' vertical mapping) is validated pixel-level by a containment test: every
+non-transparent pixel `drawText(in:)` paints — ruby included, both orientations — falls inside
+`inkBounds()` (±1.5px AA slop).
+
 Size: **medium** (was small–medium; the vertical mapper + real ruby fallback are the work).
 
 ## PR-3 — Line-pitch control: `linePitchMultiplier` (kickoff gap 4)
