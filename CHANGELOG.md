@@ -2,6 +2,34 @@
 
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
+## [0.4.0] - 2026-07-02
+### Added — the manga-lettering / headless-canvas surface (all additive)
+Driven by Portico's first real client (MangaLoft text objects); plan + as-built record in
+`Docs/MangaLettering-Extensions-Plan.md`, client recipe in `Docs/HeadlessRendering.md`.
+- **`drawText(in:)`** — display-only render (no selection highlight, no caret). The
+  raster/export counterpart of `draw(in:)`, which in vertical orientation always paints a
+  caret when selection is empty. Output is independent of cursor/selection state.
+- **`measuredSize(inlineExtent:)`** — content measurement sharing the exact layout attribute
+  pipeline (WYSIWYG parity). `inlineExtent` = the wrap constraint along the writing direction
+  (width horizontal / height vertical); nil = unconstrained; results ceiled; **verified-fit**
+  (the engine end-verifies and repairs `CTFramesetterSuggestFrameSizeWithConstraints` in both
+  directions — it over-reports the block axis under Portico's forced uniform pitch, and its
+  historical failure mode is under-reporting). Valid on an engine that has never laid out.
+- **`inkBounds()`** — union of glyph ink extents INCLUDING ruby readings (which overhang the
+  layout rect on the ascent side) and the outline rim. Size raster tiles / selection chrome
+  from this, not the layout rect. `.null` when nothing is painted.
+- **`PorticoTextOutline`** + `engine.outline` — whole-text outline (縁取り/fuchi), drawn
+  behind the fill with round joins. **`width` is the artist-facing rim thickness in points**
+  (Core Text strokes center on the glyph path, so the stroke pass uses lineWidth = 2 × width
+  and `inkBounds()` outsets by exactly `width`). Ruby readings are outlined too — Core Text
+  does NOT propagate stroke attributes to `CTRubyAnnotation` glyphs, so the stroke pass
+  rebuilds annotations carrying their own stroke attributes at the same absolute rim.
+- **`linePitchMultiplier`** — scales the uniform ruby-reserving line pitch, clamped [0.5, 3];
+  affects layout, measurement, and rendering identically. Note: in vertical orientation Core
+  Text adds a small constant per-column leading on top of the pitch — the multiplier scales
+  the pitch term, not the absolute column advance.
+- Example app: outline toggle + width slider, pitch slider, live `measuredSize` readout.
+
 ## [0.3.0] - 2026-07-02
 ### Added
 - **Undo / redo** across every edit — typing (coalesced into runs), delete, paste, cut, ruby
