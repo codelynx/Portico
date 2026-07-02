@@ -24,7 +24,7 @@ macOS 13+ · iOS 16+ · Swift 6.2 toolchain.
 Swift Package Manager — add the dependency in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/codelynx/Portico.git", branch: "main")
+.package(url: "https://github.com/codelynx/Portico.git", from: "0.1.0")
 ```
 
 ## Usage
