@@ -847,6 +847,31 @@ public class PorticoTextLayoutEngine {
 		return origins
 	}
 
+	/// Scales the uniform ruby-reserving line pitch. 1.0 (default) = the standard
+	/// ruby-sized pitch; < 1 tightens (ruby may overlap the previous line — the
+	/// client's judgment); > 1 loosens. Clamped to [0.5, 3]; non-finite values are
+	/// ignored. Setting a different value relayouts (and repaints a live view).
+	/// Affects layout, `measuredSize`, and rendering identically — it feeds the one
+	/// shared pitch. Note: in vertical orientation Core Text adds a small constant
+	/// per-column leading on top of the pitch, so the multiplier scales the pitch
+	/// term, not the absolute column advance.
+	public var linePitchMultiplier: CGFloat {
+		get { _linePitchMultiplier }
+		set {
+			guard newValue.isFinite else { return } // NaN/∞ ignored (min/max pass NaN through)
+			let clamped = min(max(newValue, 0.5), 3.0)
+			guard clamped != _linePitchMultiplier else { return }
+			_linePitchMultiplier = clamped
+			updateLayout()
+		}
+	}
+	private var _linePitchMultiplier: CGFloat = 1.0
+
+	/// The pitch actually applied everywhere pitch matters (layout-string prep and
+	/// the `measuredSize` block-extent floor) — the single source keeping the two
+	/// consumption sites coherent.
+	private var effectiveLinePitch: CGFloat { rubyLinePitch() * _linePitchMultiplier }
+
 	/// The string as actually laid out: the caller's content with the uniform
 	/// ruby-reserving line pitch merged into every paragraph style, plus vertical
 	/// glyph forms when vertical. Shared by `updateLayout()` and `measuredSize(inlineExtent:)`
@@ -860,7 +885,7 @@ public class PorticoTextLayoutEngine {
 		// line, so lines stay evenly spaced whether or not they carry ruby (no
 		// デコボコ). Merge it into any caller-supplied paragraph style rather than
 		// overwriting, so alignment / indents / spacing survive.
-		let pitch = rubyLinePitch()
+		let pitch = effectiveLinePitch
 		var styleUpdates: [(NSRange, NSParagraphStyle)] = []
 		mutableString.enumerateAttribute(.paragraphStyle, in: fullRange) { value, range, _ in
 			let style = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
@@ -973,7 +998,7 @@ public class PorticoTextLayoutEngine {
 		//    block spacing puts the floor uselessly far below the real extent.
 		if probed.fits && probed.lineCount > 0 && !hasBlockSpacingBeyondPitch {
 			let cap = orientation == .vertical ? size.width : size.height
-			let floor = min(cap, ceil(CGFloat(probed.lineCount) * rubyLinePitch()))
+			let floor = min(cap, ceil(CGFloat(probed.lineCount) * effectiveLinePitch))
 			if probe(withBlockExtent(size, floor)).fits {
 				size = withBlockExtent(size, floor)
 			} else {
