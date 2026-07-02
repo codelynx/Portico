@@ -168,6 +168,71 @@ most delightful and the hardest, especially vertical.)*
 comes from the native pointing idiom per platform; and the iOS popover *forces* the geometry
 primitives to be proven — the whole API's completeness check.
 
+### 7.2 Unified authoring UX (post-0.1.0 refinement — supersedes §7.1's pointing path)
+
+The shipped 0.1.0 Example forked the editor by selection state — popover when the selection
+was inside a ruby group, bottom bar otherwise. That split was an **artifact**, not a design:
+`rubyAnchorRectForSelection()` only produced a rect inside a group, so plain selections had no
+anchor and fell back to a different surface. Two affordances for one action ("set the reading
+for this selection"), chosen by state the user can't see — and on iOS the auto-editor competed
+with the native selection menu that `UITextInteraction` now shows. Consolidated design (three
+review agents + coordinator):
+
+**One flow — select any text → native edit action → one prefilled popover anchored to the
+selection.** Inline notation (§7a) stays the *primary, fast* bulk-authoring path; this is the
+deliberate **touch-up** path, so the one extra tap is appropriate.
+
+- **Trigger — native menu, per platform:**
+  - **iOS:** contribute the item through `UITextInput.editMenu(for:suggestedActions:)`
+    (`suggestedActions + [client action]`) — the point UIKit already calls with the selection
+    menu up. **Do not** install a second `UIEditMenuInteraction`; it would collide with the one
+    `UITextInteraction` owns (the double-menu / gesture-fight class we removed with the custom
+    recognizers).
+  - **macOS:** a right-click context-menu item **plus** an `Edit ▸ Ruby…` command (the command
+    carries a keyboard shortcut — discoverability + keyboard-first in one control).
+- **Framework owns plumbing, not UI.** Portico exposes a **selection-menu seam**: the client
+  supplies the action (title + handler); the framework wires it into the native menu on both
+  platforms and hands back the **selection range + anchor rect**. Opt-out by default — no hook,
+  no ruby menu item. The `Ruby…` label and the popover itself stay **client-owned** (Example).
+  Keeps §2's framework-first principle: Portico never mandates editing UI.
+- **One surface, three ops by prefill:**
+  - Selection **exactly equals** one group's base → **edit** (field prefilled; explicit
+    **Remove** control shown).
+  - Otherwise (plain / partial-inside-group / spanning groups) → **add or replace over the
+    selection** (empty field); apply calls `setRuby` over the selection under its existing
+    replace-on-intersect contract (§5). A partially-selected group is never silently *edited* —
+    the field opens empty (the signal), and applying deliberately replaces the intersected group
+    under §5's contract. Tap-to-edit already snaps to the full group (containment hit-test), so
+    the common edit case lands on exact-match.
+  - **Remove:** empty-field + confirm stays as a shortcut, but an explicit Remove is shown
+    whenever the popover opens prefilled (destruction must be visible, not just an empty-field
+    side effect).
+- **Anchor geometry — `anchorRectForSelection()` (new engine helper).** This is a **popover-anchor
+  contract, not a selection-bounds contract**: it returns the rect of the selection's **first
+  segment in document/layout order** (its run on the first line horizontally; the first column
+  in vertical RTL order — "first" meaning document order, not visual left), flipped to top-left.
+  *Not* the union (huge & arbitrary in vertical/wrapped, anchors into whitespace) and *not* the
+  active end — active-end anchoring makes the same selection anchor differently by drag
+  direction, and is **undefined for two of this menu's own entry points** (double-click
+  word-select and macOS right-click have no meaningful active end). The existing ruby-group
+  `rubyAnchorRectForSelection` is **regularized to the same first-segment policy**, which also
+  fixes its documented coarse-union weakness. One anchor contract for both the ruby and plain
+  cases. A general `selectionBoundingRect` (union) can be added later if a client needs it — kept
+  separate so "anchor" never means "bounds."
+  - **Revisit trigger (locked-with-exit):** if the sim/manual pass shows the popover feeling
+    disconnected from the gesture on a long multi-column vertical selection, flip to active-end
+    (or last-segment) — a one-line contract change. The empirical counter-argument gets a defined
+    exit rather than blocking the decision now.
+
+**Scope:** Example UX + one engine geometry helper + one small view seam. **No new framework
+semantics** — `setRuby`, `rubyGroup(at:)`, and `selectionRects(for:)` already back the flow;
+that the API survived a full UX rethink needing only geometry/seam plumbing is itself the
+client-agnostic validation §7.1 set out to prove.
+
+**Verification note:** the iOS menu-item pass needs an on-device/simulator check that the
+custom item actually appears alongside Copy / Look Up with the native selection UI up — the one
+integration in this design with real unknowns.
+
 ## 8. Display
 
 When a selection **intersects** a ruby base, **highlight its reading too**, always as a
