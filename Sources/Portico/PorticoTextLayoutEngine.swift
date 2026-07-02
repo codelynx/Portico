@@ -31,6 +31,7 @@ public class PorticoTextLayoutEngine {
 	/// orientation change can't leave it stale.
 	public var drawsCaret: Bool { drawsSelectionHighlight || orientation == .vertical }
 	private var selectionAnchorIndex: Int?
+	private let rubyAttributeKey = NSAttributedString.Key(kCTRubyAnnotationAttributeName as String)
 	public var textDidChange: ((NSAttributedString) -> Void)?
 	
 	private var frameSetter: CTFramesetter?
@@ -197,16 +198,22 @@ public class PorticoTextLayoutEngine {
 		}
 	}
 
+	/// True when an insertion at `location` (replacing `length` chars) lands strictly inside a
+	/// single ruby group — the chars on both sides belong to the same contiguous ruby run — so
+	/// inserted text should inherit the ruby and extend the group. At a group boundary this is
+	/// false and the insertion is plain text. See Docs/RubyEditing-Design.md §6.
+	private func insertionExtendsRubyGroup(at location: Int, replacing length: Int, in string: NSAttributedString) -> Bool {
+		let beforeIndex = location - 1
+		let afterIndex = location + length
+		guard beforeIndex >= 0, afterIndex < string.length else { return false }
+		var beforeRange = NSRange(location: 0, length: 0)
+		guard string.attribute(rubyAttributeKey, at: beforeIndex, effectiveRange: &beforeRange) != nil else { return false }
+		return NSLocationInRange(afterIndex, beforeRange)
+	}
+
 	public func insertText(_ text: String) {
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
-		let attrs = cursorIndex > 0 ? mutableString.attributes(at: cursorIndex - 1, effectiveRange: nil) : [:]
-		
-		// Remove underline if we are pulling attributes from previously marked text
-		var cleanAttrs = attrs
-		cleanAttrs.removeValue(forKey: NSAttributedString.Key(kCTUnderlineStyleAttributeName as String))
-		
-		let insertedString = NSAttributedString(string: text, attributes: cleanAttrs)
-		
+
 		let targetRange: NSRange
 		if let mr = markedRange {
 			targetRange = mr
@@ -215,12 +222,24 @@ public class PorticoTextLayoutEngine {
 		} else {
 			targetRange = NSRange(location: cursorIndex, length: 0)
 		}
-		
+
+		let attrs = cursorIndex > 0 ? mutableString.attributes(at: cursorIndex - 1, effectiveRange: nil) : [:]
+		var cleanAttrs = attrs
+		// Don't carry the IME underline into committed text.
+		cleanAttrs.removeValue(forKey: NSAttributedString.Key(kCTUnderlineStyleAttributeName as String))
+		// Ruby attribute-edge rule: inserted text joins a ruby group only when it lands
+		// strictly inside one; at a group boundary it is plain text — fixes typing after a
+		// base extending its ruby. See Docs/RubyEditing-Design.md §6.
+		if !insertionExtendsRubyGroup(at: targetRange.location, replacing: targetRange.length, in: mutableString) {
+			cleanAttrs.removeValue(forKey: rubyAttributeKey)
+		}
+
+		let insertedString = NSAttributedString(string: text, attributes: cleanAttrs)
 		mutableString.replaceCharacters(in: targetRange, with: insertedString)
 		self.cursorIndex = targetRange.location + text.utf16.count
 		self.selectionRange = nil
 		self.markedRange = nil
-		
+
 		self.attributedString = mutableString
 		textDidChange?(self.attributedString)
 		updateLayout()
