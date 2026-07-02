@@ -63,6 +63,10 @@ public class PorticoTextLayoutEngine {
 	/// True while a run of plain typing is being coalesced into a single undo step. Reset by any
 	/// break (caret/selection move, delete, marked text, external replacement, or a restore).
 	private var typingRunOpen = false
+	/// Captured at IME composition start (first `setMarkedText`); on commit it becomes the one undo
+	/// step that reverts the whole composition to its pre-composition state (§6). No steps register
+	/// while composing.
+	private var preCompositionSnapshot: EditSnapshot?
 
 	private var frameSetter: CTFramesetter?
 	private var textFrame: CTFrame?
@@ -114,6 +118,7 @@ public class PorticoTextLayoutEngine {
 	/// clear the stack). Not `update(attributedString:)` — that's the document-reset path.
 	private func restore(_ snapshot: EditSnapshot) {
 		typingRunOpen = false
+		preCompositionSnapshot = nil
 		attributedString = snapshot.attributedString
 		cursorIndex = snapshot.cursorIndex
 		markedRange = nil
@@ -165,6 +170,7 @@ public class PorticoTextLayoutEngine {
 		// host-injected one owns the app's history too), and end any typing run.
 		undoManager.removeAllActions(withTarget: self)
 		typingRunOpen = false
+		preCompositionSnapshot = nil
 		self.attributedString = attributedString
 		clampEditStateToBounds()
 		updateLayout()
@@ -271,6 +277,7 @@ public class PorticoTextLayoutEngine {
 
 	public func setMarkedText(_ text: String, selectedRange: NSRange, replacementRange: NSRange?) {
 		typingRunOpen = false // IME composition boundary breaks a typing run; no undo step while marked
+		if markedRange == nil { preCompositionSnapshot = currentSnapshot() } // composition start
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
 
 		let targetRange: NSRange
@@ -307,12 +314,20 @@ public class PorticoTextLayoutEngine {
 	
 	public func unmarkText() {
 		guard let mr = markedRange else { return }
-		
+		// Finalizing a composition via unmark (rather than a committing insertText) is also a commit:
+		// Finalize the composition *first* (drop the underline, clear the marked range), then
+		// register the undo step against the committed state — so the step and its redo reflect the
+		// finalized text, not the still-underlined marked intermediate, and the no-op check compares
+		// the committed string (not one that differs only by the temporary underline).
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
 		mutableString.removeAttribute(NSAttributedString.Key(kCTUnderlineStyleAttributeName as String), range: mr)
-		
 		self.attributedString = mutableString
 		self.markedRange = nil
+
+		if let pre = preCompositionSnapshot {
+			if !attributedString.isEqual(pre.attributedString) { registerUndoStep(restoring: pre) }
+			preCompositionSnapshot = nil
+		}
 		textDidChange?(self.attributedString)
 		updateLayout()
 	}
@@ -398,11 +413,16 @@ public class PorticoTextLayoutEngine {
 	}
 
 	public func insertText(_ text: String) {
-		// One undo per typing run — but NOT while committing an IME composition (markedRange set):
-		// the current state is the underlined marked candidate, so snapshotting it would register a
-		// wrong step. IME-commit undo (restoring the pre-composition state) is deferred to Phase 3
-		// (Docs/UndoRedo-Design.md §6). Composition itself registers nothing (see setMarkedText).
-		if markedRange == nil {
+		// Undo granularity (§6): committing an IME composition (markedRange set) is one discrete step
+		// back to the pre-composition state captured at composition start — not a snapshot of the
+		// underlined marked candidate. Plain typing coalesces into a run. Composition updates
+		// themselves register nothing (see setMarkedText).
+		if markedRange != nil, let pre = preCompositionSnapshot {
+			typingRunOpen = false
+			registerUndoStep(restoring: pre)
+			preCompositionSnapshot = nil
+		} else if markedRange == nil {
+			preCompositionSnapshot = nil // a plain committed keystroke means no active composition
 			beginCoalescedTypingStep()
 		}
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
@@ -451,7 +471,8 @@ public class PorticoTextLayoutEngine {
 	/// whitespace-only removes it). The base text is unchanged, so the caret/selection are
 	/// preserved. This is the undoable ruby-edit command a client drives (design §4) instead of
 	/// replacing the whole document via the binding. No-op (and no undo step) if the range is empty
-	/// or out of bounds, or if the reading doesn't actually change.
+	/// or out of bounds, or if the reading doesn't actually change. Assumes no active IME composition
+	/// (the views commit composition before delivering structural commands).
 	public func setRuby(_ reading: String?, for range: NSRange) {
 		guard range.length > 0, range.location >= 0, NSMaxRange(range) <= attributedString.length else { return }
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)

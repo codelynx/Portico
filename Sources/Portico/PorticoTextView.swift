@@ -30,8 +30,13 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 	public override var acceptsFirstResponder: Bool { return true }
 
 	/// Vend the engine's undo manager up the responder chain, so Edit ▸ Undo/Redo and ⌘Z drive the
-	/// engine's model-scoped stack (see Docs/UndoRedo-Design.md §1).
-	public override var undoManager: UndoManager? { layoutEngine.undoManager }
+	/// engine's model-scoped stack (§1) — but **`nil` while composing** (marked text active), which
+	/// greys out the menu *and* blocks ⌘Z: every system entry point resolves through this property,
+	/// so undoing mid-composition (which would desync the IME) is impossible. Registration is
+	/// unaffected — the engine holds its manager directly.
+	public override var undoManager: UndoManager? {
+		layoutEngine.markedRange == nil ? layoutEngine.undoManager : nil
+	}
 	
 	public override func draw(_ dirtyRect: NSRect) {
 		super.draw(dirtyRect)
@@ -271,10 +276,9 @@ public class PorticoTextView: UIView, UITextInput {
 		self.backgroundColor = .clear
 		self.contentMode = .redraw
 		// Repaint on engine-driven changes the view didn't initiate — undo/redo, client setRuby.
-		// Weak self: the engine may outlive the view (client-owned, injected). (Refreshing
-		// UITextInteraction's cached selection UI after an engine-external change is a separate
-		// on-device concern — see Phase 3 notes.)
+		// Weak self: the engine may outlive the view (client-owned, injected).
 		layoutEngine.onNeedsDisplay = { [weak self] in self?.setNeedsDisplay() }
+		observeUndoForSelectionRefresh()
 
 		// Let UIKit own selection UI: a UITextInteraction drives caret placement,
 		// word/loupe selection, and grab handles through our UITextInput conformance
@@ -291,12 +295,53 @@ public class PorticoTextView: UIView, UITextInput {
 	public required init?(coder: NSCoder) {
 		fatalError("init(coder:) has not been implemented")
 	}
-	
+
+	private var undoObservers: [NSObjectProtocol] = []
+
+	isolated deinit {
+		undoObservers.forEach(NotificationCenter.default.removeObserver)
+	}
+
+	/// Bracket engine-external undo/redo (⌘Z / shake) so `UITextInteraction` refreshes its cached
+	/// selection UI. The engine's `UndoManager` posts will/did notifications around each transition;
+	/// we fire the `inputDelegate` will/did selection pair synchronously (queue `nil`) around them.
+	/// Scoped to undo/redo only — the typing paths bracket themselves — avoiding the reentrancy that
+	/// ruled out doing this from `onNeedsDisplay`. (With an injected host manager, this also fires on
+	/// the host's *own* undo/redo — the notifications carry no target to filter on — but that's a
+	/// harmless extra re-query, since nothing in our layout changed.)
+	private func observeUndoForSelectionRefresh() {
+		let manager = layoutEngine.undoManager
+		func observe(_ name: Notification.Name, will: Bool) {
+			let token = NotificationCenter.default.addObserver(forName: name, object: manager, queue: nil) { [weak self] _ in
+				guard let self else { return }
+				// Skip while composing: our own undo is blocked (vend-nil), but a *shared injected*
+				// manager can fire for the host's own undo/redo — don't poke the IME mid-composition.
+				guard self.layoutEngine.markedRange == nil else { return }
+				if will {
+					self.inputDelegate?.textWillChange(self)
+					self.inputDelegate?.selectionWillChange(self)
+				} else {
+					self.inputDelegate?.selectionDidChange(self)
+					self.inputDelegate?.textDidChange(self)
+				}
+			}
+			undoObservers.append(token)
+		}
+		observe(.NSUndoManagerWillUndoChange, will: true)
+		observe(.NSUndoManagerWillRedoChange, will: true)
+		observe(.NSUndoManagerDidUndoChange, will: false)
+		observe(.NSUndoManagerDidRedoChange, will: false)
+	}
+
 	public override var canBecomeFirstResponder: Bool { return true }
 
 	/// Vend the engine's undo manager up the responder chain, so ⌘Z / shake-to-undo drive the
-	/// engine's model-scoped stack (see Docs/UndoRedo-Design.md §1).
-	public override var undoManager: UndoManager? { layoutEngine.undoManager }
+	/// engine's model-scoped stack (§1) — but **`nil` while composing** (marked text active), so
+	/// undoing mid-composition (which would desync the IME) is blocked at every entry point.
+	/// Registration is unaffected — the engine holds its manager directly.
+	public override var undoManager: UndoManager? {
+		layoutEngine.markedRange == nil ? layoutEngine.undoManager : nil
+	}
 
 	// Hardware arrow keys (and Shift+arrow selection) are driven by UITextInteraction through
 	// UITextInput — `position(from:in:offset:)` / `characterRange(byExtending:in:)` — which route

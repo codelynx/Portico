@@ -250,6 +250,68 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 	#expect(e.undoManager.canUndo) // history preserved (not a genuine document change)
 }
 
+@Test func imeCommitUndoesToPreCompositionInOneStep() {
+	let e = engine("ab") // caret at end
+	e.setMarkedText("か", selectedRange: NSRange(location: 0, length: 1), replacementRange: nil) // start
+	e.setMarkedText("かん", selectedRange: NSRange(location: 0, length: 2), replacementRange: nil) // update
+	e.insertText("感") // commit
+	#expect(e.attributedString.string == "ab感")
+	e.undoManager.undo() // one step back to before composition
+	#expect(e.attributedString.string == "ab")
+}
+
+@Test func imeUnmarkFinalizeUndoesToPreComposition() {
+	let e = engine("ab")
+	e.setMarkedText("かん", selectedRange: NSRange(location: 0, length: 2), replacementRange: nil)
+	#expect(e.attributedString.string == "abかん")
+	e.unmarkText() // finalize the composition as-is
+	e.undoManager.undo()
+	#expect(e.attributedString.string == "ab")
+}
+
+@Test func imeUnmarkUndoRedoRestoresFinalizedNotMarked() {
+	let e = engine("")
+	e.setMarkedText("かん", selectedRange: NSRange(location: 0, length: 2), replacementRange: nil)
+	e.unmarkText()
+	e.undoManager.undo()
+	#expect(e.attributedString.string == "")
+	e.undoManager.redo()
+	#expect(e.attributedString.string == "かん")
+	#expect(e.markedRange == nil) // redo restores the committed text, not the marked intermediate
+}
+
+@Test func imeUnmarkWithNoNetChangeRegistersNoStep() {
+	// The reorder fix: unmark finalizes (drops the underline) before comparing, so composing the
+	// same characters over the same text and unmarking is a true no-op — no dead undo step.
+	let e = engine("かな")
+	e.setSelectedRange(NSRange(location: 0, length: 2))
+	e.setMarkedText("かな", selectedRange: NSRange(location: 0, length: 2), replacementRange: nil)
+	e.unmarkText()
+	#expect(e.attributedString.string == "かな")
+	#expect(!e.undoManager.canUndo) // finalized text equals pre-composition → no step
+}
+
+@Test func imeCommitFormingRubyUndoesInTwoSteps() {
+	let e = engine("")
+	e.setMarkedText("漢字《かんじ》", selectedRange: NSRange(location: 0, length: 6), replacementRange: nil)
+	e.insertText("漢字《かんじ》") // commit the composed notation → inline conversion fires
+	#expect(e.attributedString.string == "漢字")
+	e.undoManager.undo() // step 1: revert conversion → literal
+	#expect(e.attributedString.string == "漢字《かんじ》")
+	e.undoManager.undo() // step 2: revert the whole IME commit → pre-composition
+	#expect(e.attributedString.string == "")
+}
+
+@Test func viewVendsNilUndoManagerWhileComposing() {
+	let e = engine("")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	#expect(view.undoManager === e.undoManager) // normally vends the engine's manager
+	e.setMarkedText("か", selectedRange: NSRange(location: 0, length: 1), replacementRange: nil)
+	#expect(view.undoManager == nil) // blocked while composing (⌘Z / menu can't reach it)
+	e.insertText("感") // commit
+	#expect(view.undoManager === e.undoManager) // restored after commit
+}
+
 @Test func wrappingEngineInViewDoesNotClearUndo() {
 	// Contract: attaching a view to an injected engine must NOT clear its undo (no reset-on-attach).
 	let e = engine("")

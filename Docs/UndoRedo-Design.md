@@ -114,27 +114,29 @@ attributed string.
 
 ## 6. IME
 
-No undo steps while marked text exists; register only on commit. Enablement is a **view-layer**
-responsibility too: the view validates Edit ▸ Undo/Redo (and equivalents) as **disabled while
-`markedRange != nil`**, so the no-op isn't mysterious. The system IME keeps its own preedit
-cancel/undo behavior.
+No undo steps while marked text exists; register only on commit — **done (Phase 3b)**: the
+pre-composition state is captured at composition start (`setMarkedText` when `markedRange == nil`)
+and registered as one step on commit (via `insertText` or `unmarkText`), so a whole IME commit
+undoes in one step to before it began — and IME-commit-then-`《》`-conversion undoes in two, like
+typed input. The system IME keeps its own preedit cancel/undo behavior.
 
-**Phase-2 interim state (Phase-3 obligation).** Phase 2 parks IME-commit undo: `insertText`
-registers no typing step while `markedRange != nil`. But inline `《》` conversion still runs after
-an IME commit (correctly — Japanese users type the brackets *through* the IME), so it registers
-its own step. The asymmetry: after an IME commit that forms ruby, undo #1 reverts the conversion to
-literal notation, but the commit itself has no step yet. **Phase 3 must** capture a pre-composition
-snapshot at composition start and register it on commit, so IME-commit-then-conversion undoes in
-two steps, identical to typed input.
+**Blocking undo while composing — done (Phase 3b).** The view **vends `nil` from `undoManager`
+while `markedRange != nil`**. Because every system entry point (Edit menu, ⌘Z, iOS shake) resolves
+undo through that property, this greys out the menu *and* blocks the keyboard shortcuts in one line —
+no `validateMenuItem`/`canPerformAction` gymnastics. It also closes a real hazard: a hardware ⌘Z
+mid-composition would otherwise reach the manager and restore the engine (clearing `markedRange`)
+while the IME still thinks it's composing, leaving a desynced ghost composition. Registration is
+unaffected — the engine holds its manager directly.
 
-**Phase-3 obligation — iOS selection-UI after engine-external undo.** On iOS, undo/redo driven by
-the vended `UndoManager` (⌘Z / shake) reflows the engine but leaves `UITextInteraction`'s cached
-selection UI stale (Phase 3a repaints text via `onNeedsDisplay` but doesn't bracket). Fix source-
-side, not from `onNeedsDisplay` (which fires inside view-initiated `inputDelegate` brackets —
-reentrancy): the view observes the engine's `UndoManager` did-undo/did-redo notifications and
-brackets those specific transitions with `inputDelegate` selection notifications, leaving the
-typing paths untouched. Client-`setRuby` staleness is separate — likely absorbed by 3c's Example
-popover flow, which already brackets.
+**iOS selection-UI after engine-external undo — done (Phase 3b).** ⌘Z / shake reflow the engine
+but leave `UITextInteraction`'s cached selection UI stale (Phase 3a repaints text via
+`onNeedsDisplay` but doesn't bracket). The view observes the engine's `UndoManager` will/did
+undo/redo notifications and brackets those transitions with `inputDelegate` selection
+notifications, source-side (not from `onNeedsDisplay`, which fires inside view-initiated brackets —
+reentrancy), leaving the typing paths untouched. The bracket is skipped while `markedRange != nil`
+so a shared injected manager's host-side undo doesn't poke the IME. *(Runtime confirmation — ⌘Z
+inert + composition intact while composing, shake blocked, handles refresh after undo — is on the
+3c on-device checklist; the vend-nil / bracket source is correct but UIKit-behavior-sensitive.)*
 
 ## 7. Scope (v1)
 
