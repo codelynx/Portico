@@ -11,10 +11,11 @@ own the editing UI; clients do (novel writers, manga speech-bubble tools, …). 
 framework's job is **UI-agnostic primitives + editing semantics + geometry**, rich
 enough that any client interaction pattern is buildable on the public API.
 
-Today: `parse` / `serialize` / render exist; there is **no** interactive add/edit/remove
-and no ruby-aware editing. Two concrete defects to fix: insertion **inherits** the
-`CTRubyAnnotation` from the preceding char (typing after a base extends the group), and
-delete is char-level with no range maintenance.
+Starting point (pre-Phase-3): `parse` / `serialize` / render existed, but there was **no**
+interactive add/edit/remove and no ruby-aware editing. Two concrete defects were fixed here:
+insertion **inherited** the `CTRubyAnnotation` from the preceding char (typing after a base
+extended the group), and delete was char-level with no range maintenance. Both are resolved —
+see §10 for per-step status.
 
 ## 2. Principles
 
@@ -126,8 +127,10 @@ IME concern dissolves with a "committed text only" trigger.)*
 
 - **(a) Inline notation conversion** — *primary, keyboard-first.* Type `漢字《かんじ》` (and the
   `｜` explicit-base form the parser already supports) and it converts on the closing `》`.
-  Contract: converts **only on committed text — never inside IME marked text**; cleanly
-  **undoable** back to the literal characters (escape hatch for a literal `》`).
+  Contract: converts **only on committed text — never inside IME marked text**. Designed to
+  be **undoable in one step** back to the literal characters (escape hatch for a literal `》`)
+  — the reversion is a single text replacement, but no undo manager is wired to the engine
+  yet, so this is a design property, not a shipped feature (§11, still open).
 - **(b) Select base → set/edit reading** — *reference API validation.* Selection → query →
   `setRuby`; the MS Word ルビ-dialog idiom. Ship it as the **Example app's** demo — see §7.1
   for the per-platform form.
