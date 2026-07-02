@@ -126,3 +126,34 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 @Test func wordRangeNilOnEmpty() {
 	#expect(engine("").wordRange(at: 0) == nil)
 }
+
+// MARK: - External text replacement clamps edit state
+
+@Test func externalShorterTextClampsCursorAndDropsSelection() {
+	let e = engine("Hello world")
+	e.setSelectedRange(NSRange(location: 6, length: 5)) // select "world" → cursor at 11
+	e.update(attributedString: NSAttributedString(string: "Hi")) // length 2, well inside old state
+	#expect(e.cursorIndex == 2)          // clamped from 11 into bounds
+	#expect(e.selectionRange == nil)     // out-of-bounds selection dropped
+	// A follow-up insert must build an in-bounds replacement range (no crash / no NSRange fault).
+	e.insertText("!")
+	#expect(e.attributedString.string == "Hi!")
+}
+
+@Test func externalTextReplacementKeepsInBoundsState() {
+	let e = engine("Hello world")
+	e.setSelectedRange(NSRange(location: 0, length: 5)) // "Hello", still valid in longer text
+	e.update(attributedString: NSAttributedString(string: "Hello there, friend"))
+	#expect(e.selectionRange == NSRange(location: 0, length: 5)) // preserved — still in bounds
+}
+
+@Test func droppedSelectionClearsAnchorSoLaterMoveCantResurrectIt() {
+	let e = engine("Hello world")
+	e.setSelectedRange(NSRange(location: 1, length: 6)) // anchor 1, cursor 7
+	e.update(attributedString: NSAttributedString(string: "Hi!!")) // length 4 → selection out of bounds
+	#expect(e.selectionRange == nil) // dropped
+	// A later move must be a plain caret move, not a selection extended from the stale anchor.
+	e.updateSelection(to: 3)
+	#expect(e.selectionRange == nil)
+	#expect(e.cursorIndex == 3)
+}

@@ -51,7 +51,33 @@ public class PorticoTextLayoutEngine {
 	
 	public func update(attributedString: NSAttributedString) {
 		self.attributedString = attributedString
+		clampEditStateToBounds()
 		updateLayout()
+	}
+
+	/// Normalize cursor/selection/marked state into the current string bounds. A client can drive
+	/// `update(attributedString:)` with a shorter document, leaving `cursorIndex`,
+	/// `selectionRange`, `markedRange`, or the anchor pointing past the new end — the next
+	/// `insertText`/`setMarkedText` would then build an out-of-bounds replacement range. As the
+	/// state-normalization gate for these public-mutable properties, it also rejects negative
+	/// locations/lengths, not just past-the-end ones. The cursor is clamped into `0...length`;
+	/// selection/marked ranges that no longer fit are dropped (a partially clamped selection is
+	/// semantically meaningless). Dropping a selection also clears `selectionAnchorIndex`, so a
+	/// later `updateSelection`/Shift+Arrow can't resurrect the gone selection from a stale anchor.
+	/// `selectionRange`'s `didSet` notifies observers when dropping changes what's observable.
+	private func clampEditStateToBounds() {
+		let length = attributedString.length
+		cursorIndex = min(max(cursorIndex, 0), length)
+		if let sr = selectionRange, sr.location < 0 || sr.length < 0 || NSMaxRange(sr) > length {
+			selectionRange = nil
+			selectionAnchorIndex = nil
+		}
+		if let anchor = selectionAnchorIndex, anchor < 0 || anchor > length {
+			selectionAnchorIndex = nil
+		}
+		if let mr = markedRange, mr.location < 0 || mr.length < 0 || NSMaxRange(mr) > length {
+			markedRange = nil
+		}
 	}
 	
 	public func update(bounds: CGSize) {
