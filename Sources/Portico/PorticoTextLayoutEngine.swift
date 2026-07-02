@@ -40,7 +40,8 @@ public class PorticoTextLayoutEngine {
 	/// text is vertical — UIKit's `UITextInteraction` can't render a vertical-text caret
 	/// (it collapses our wide-short caret rect to a stub), so the engine draws it even when
 	/// iOS otherwise owns selection. Computed from the live `orientation` so a runtime
-	/// orientation change can't leave it stale.
+	/// orientation change can't leave it stale. Affects `draw(in:)` only — for a
+	/// display/raster render with no editing chrome, use `drawText(in:)`.
 	public var drawsCaret: Bool { drawsSelectionHighlight || orientation == .vertical }
 	private var selectionAnchorIndex: Int?
 	public var textDidChange: ((NSAttributedString) -> Void)?
@@ -904,9 +905,26 @@ public class PorticoTextLayoutEngine {
 		}
 	}
 	
-	public func draw(in context: CGContext) {
+	/// The text itself — the one place glyphs hit the context. CoreText natively handles
+	/// vertical layout geometry when progression is rightToLeft and
+	/// kCTVerticalFormsAttributeName is applied. No context rotation needed on macOS!
+	private func drawTextCore(in context: CGContext) {
 		guard let textFrame = textFrame else { return }
-		
+		CTFrameDraw(textFrame, context)
+	}
+
+	/// The caret, when the engine owns it (see `drawsCaret`). Drawn over the text.
+	private func drawCaret(in context: CGContext) {
+		guard drawsCaret && selectionRange == nil && markedRange == nil else { return }
+		let rect = caretRect(for: cursorIndex)
+		context.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
+		context.fill(rect)
+	}
+
+	/// Editing render: selection highlight under the text, caret over it.
+	public func draw(in context: CGContext) {
+		guard textFrame != nil else { return }
+
 		context.saveGState()
 
 		// Draw selection highlight first so text is drawn over it
@@ -914,18 +932,22 @@ public class PorticoTextLayoutEngine {
 			drawSelection(in: context)
 		}
 
-		// CoreText natively handles vertical layout geometry when progression is rightToLeft
-		// and kCTVerticalFormsAttributeName is applied. No context rotation needed on macOS!
+		drawTextCore(in: context)
 
-		CTFrameDraw(textFrame, context)
+		drawCaret(in: context)
 
-		// Draw the caret when the engine owns it (see `drawsCaret`).
-		if drawsCaret && selectionRange == nil && markedRange == nil {
-			let rect = caretRect(for: cursorIndex)
-			context.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
-			context.fill(rect)
-		}
+		context.restoreGState()
+	}
 
+	/// Renders the laid-out text only — no selection highlight, no caret. The
+	/// display/raster-export counterpart of `draw(in:)`: use this to paint a committed,
+	/// non-editing document (a canvas element, a thumbnail, a high-DPI export tile);
+	/// output is independent of `cursorIndex`/`selectionRange` state. No layout
+	/// (zero `bounds`) = no-op.
+	public func drawText(in context: CGContext) {
+		guard textFrame != nil else { return }
+		context.saveGState()
+		drawTextCore(in: context)
 		context.restoreGState()
 	}
 }
