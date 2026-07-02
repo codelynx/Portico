@@ -281,3 +281,10 @@ pitch slider, auto-size-to-content) — doubles as the manual iOS smoke.
 (constrained + unconstrained, incl. never-laid-out engine), lay out, render display-only
 vertical text with long-reading ruby and outline at 8× with zero caret/selection artifacts,
 and query ink bounds containing every painted pixel. All 128 pre-existing tests green.
+
+**AS BUILT (slice exit):** checklist met — 170 tests green (128 pre-existing + 42 new across
+PR-1..6). iOS smoke status: Example app **builds** for iOS Simulator (iPhone 16/18.6) and
+macOS with the 0.4.0 demo controls; the *interactive* iOS pass (IME typing, outline toggle,
+pitch slider by hand) is deferred to the user's next simulator/device session — a conscious
+waiver, not an oversight. Guide gained the ink-sized-tile origin-offset recipe and the
+`@MainActor` threading note (round-8 review).
