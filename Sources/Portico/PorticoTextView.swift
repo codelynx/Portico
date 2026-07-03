@@ -406,6 +406,23 @@ public class PorticoTextView: UIView, UITextInput {
 			tintColor = nil
 			caretTintCleared = false
 		}
+		// The tint trick stopped hiding the caret on modern UIKit (observed
+		// iPadOS 26: the system cursor view no longer follows tintColor), so
+		// ALSO deactivate the selection-display interaction while the engine
+		// owns the caret. Safe: engine-owns is defined as no selection AND no
+		// composition, so the system display has nothing else to show; it
+		// reactivates the moment a selection or marked text appears (handles,
+		// highlight, and the system caret all come back). `caretRect` stays
+		// honest throughout — candidate-window placement is unaffected.
+		if #available(iOS 17.0, *) {
+			for interaction in interactions {
+				if let display = interaction as? UITextSelectionDisplayInteraction {
+					if display.isActivated == engineOwnsCaret {
+						display.isActivated = !engineOwnsCaret
+					}
+				}
+			}
+		}
 	}
 
 	public override func draw(_ rect: CGRect) {
