@@ -1190,22 +1190,25 @@ public class PorticoTextLayoutEngine {
 		_ reading: String,
 		baseAttributes: [NSAttributedString.Key: Any]
 	) -> CGFloat {
-		let baseSize: CGFloat
+		// Resolve the base font DEFENSIVELY: a foreign value under `.font`
+		// (Portico tolerates foreign values under its own ruby key; be equally
+		// tolerant here) must degrade to the approximation, never trap.
+		let baseFont: CTFont?
 		if let value = baseAttributes[.font],
-		   CFGetTypeID(value as CFTypeRef) == CTFontGetTypeID() || value is CTFont {
-			baseSize = CTFontGetSize(value as! CTFont)
-		} else if let value = baseAttributes[.font] {
-			// Platform font (NSFont/UIFont) — toll-free usable as CTFont for size.
-			baseSize = CTFontGetSize(value as! CTFont)
+		   CFGetTypeID(value as CFTypeRef) == CTFontGetTypeID() {
+			// Covers CTFont AND platform fonts (NSFont/UIFont are toll-free
+			// bridged, so their CFTypeID IS CTFontGetTypeID()).
+			baseFont = (value as! CTFont)
 		} else {
-			baseSize = 12
+			baseFont = nil
 		}
+		let baseSize = baseFont.map(CTFontGetSize) ?? 12
 		let rubySize = baseSize * 0.5
-		guard let value = baseAttributes[.font] else {
-			// No font attribute: kana-monospace approximation.
+		guard let baseFont else {
+			// No usable font: kana-monospace approximation.
 			return CGFloat(reading.utf16.count) * rubySize
 		}
-		let rubyFont = CTFontCreateCopyWithAttributes(value as! CTFont, rubySize, nil, nil)
+		let rubyFont = CTFontCreateCopyWithAttributes(baseFont, rubySize, nil, nil)
 		let attributed = NSAttributedString(string: reading, attributes: [
 			NSAttributedString.Key(kCTFontAttributeName as String): rubyFont
 		])

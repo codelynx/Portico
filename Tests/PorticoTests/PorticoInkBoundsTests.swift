@@ -144,6 +144,17 @@ private func laidOutEngine(
 	}
 }
 
+@Test func inkBoundsToleratesForeignFontAttributeValue() {
+	// 0.4.1 hardening: a non-font value under `.font` must degrade to the
+	// approximation in the ruby-overhang path, never force-cast-trap.
+	let attributed = NSMutableAttributedString(attributedString: PorticoRuby.parse("世《せかい》"))
+	attributed.addAttribute(.font, value: "not a font", range: NSRange(location: 0, length: attributed.length))
+	let e = PorticoTextLayoutEngine(
+		attributedString: attributed, orientation: .vertical, bounds: boundsSize)
+	let ink = e.inkBounds() // must not crash
+	#expect(!ink.isNull)
+}
+
 @Test func inkBoundsAllNewlinesIsNull() {
 	// Laid out, but nothing painted: whitespace/newline-only content has no ink.
 	#expect(laidOutEngine("\n\n", orientation: .horizontal).inkBounds().isNull)
