@@ -288,3 +288,23 @@ macOS with the 0.4.0 demo controls; the *interactive* pass (IME typing, ruby edi
 pitch slider by hand) was run and confirmed by the user on device 2026-07-02 — **iOS smoke
 GREEN**; the earlier waiver is closed. Guide gained the ink-sized-tile origin-offset recipe and the
 `@MainActor` threading note (round-8 review).
+
+## Known issue: `measuredSize` has multiple non-truncating fixed points (filed 2026-07-03)
+
+Found by MangaLoft slice-3 PR-B tests. The same content + style + orientation can measure
+differently depending on the engine's bounds state at the time of the call — e.g. two vertical
+glyphs at 14pt measured `24×24` when re-measured incrementally from a `25.2×25.2` starter-cell
+box, but `28×28` when measured on a fresh engine from `.zero` bounds. Both results render
+without truncation (verify-and-repair accepts any non-truncating size), but the doc contract
+says measurement is independent of current `bounds` — falsified.
+
+Consequences downstream (MangaLoft): commit-time geometry vs on-open geometry refresh can
+disagree for identical content, producing phantom geometry churn. Host-side mitigations are in
+place (unchanged-content commits keep original geometry; commit geometry is canonicalized
+through a fresh engine), but the root cause is here.
+
+Fix shape: add a determinism test (same content + inline constraint → bit-identical
+`measuredSize` across arbitrary prior bounds/layout states), find where engine state leaks into
+the verify-and-repair / binary-search walk (suspects: line-count snapshot from the prior layout;
+suggested-size cap seeded from current bounds), fix, release as 0.4.2. Until then, hosts should
+measure from a fresh engine when a canonical answer matters.

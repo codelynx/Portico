@@ -29,6 +29,19 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 	public override var isFlipped: Bool { return false }
 	public override var acceptsFirstResponder: Bool { return true }
 
+	/// When `true`, the view claims first responder as soon as it lands in a
+	/// window — for hosts that mount the editor programmatically (an in-place
+	/// overlay opened by a tool gesture) rather than via a user click on the
+	/// view itself. One-shot per attach; a later re-attach re-claims only if
+	/// still set. Default `false`: plain embeds keep click-to-focus.
+	public var focusesOnMount: Bool = false
+
+	public override func viewDidMoveToWindow() {
+		super.viewDidMoveToWindow()
+		guard focusesOnMount, let window else { return }
+		window.makeFirstResponder(self)
+	}
+
 	/// Vend the engine's undo manager up the responder chain, so Edit ▸ Undo/Redo and ⌘Z drive the
 	/// engine's model-scoped stack (§1) — but **`nil` while composing** (marked text active), which
 	/// greys out the menu *and* blocks ⌘Z: every system entry point resolves through this property,
@@ -334,6 +347,18 @@ public class PorticoTextView: UIView, UITextInput {
 	}
 
 	public override var canBecomeFirstResponder: Bool { return true }
+
+	/// When `true`, the view claims first responder as soon as it lands in a
+	/// window — for hosts that mount the editor programmatically (an in-place
+	/// overlay opened by a tool gesture) rather than via a user touch on the
+	/// view itself. Default `false`: plain embeds keep tap-to-focus.
+	public var focusesOnMount: Bool = false
+
+	public override func didMoveToWindow() {
+		super.didMoveToWindow()
+		guard focusesOnMount, window != nil else { return }
+		becomeFirstResponder()
+	}
 
 	/// Vend the engine's undo manager up the responder chain, so ⌘Z / shake-to-undo drive the
 	/// engine's model-scoped stack (§1) — but **`nil` while composing** (marked text active), so
