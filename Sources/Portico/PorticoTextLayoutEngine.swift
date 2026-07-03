@@ -1013,6 +1013,16 @@ public class PorticoTextLayoutEngine {
 		}
 		strokeString.addAttribute(strokeColorKey, value: o.color, range: fullRange)
 
+		// 縦中横 plan-B (slice-4 PR-1 empirical pin: delegates do NOT suppress
+		// glyph drawing): group ranges must not paint phantom stroke outlines —
+		// zero the stroke width and clear the color for marker runs. The
+		// PR-2 post-pass strokes the mini-line itself (fuchi parity).
+		strokeString.enumerateAttribute(PorticoTateChuYoko.groupKey, in: fullRange) { value, range, _ in
+			guard value != nil else { return }
+			strokeString.addAttribute(strokeWidthKey, value: 0 as NSNumber, range: range)
+			strokeString.addAttribute(strokeColorKey, value: CGColor(gray: 0, alpha: 0), range: range)
+		}
+
 		// R1 (verified by the rubyIsOutlined gate): CTRubyAnnotation glyphs do NOT
 		// inherit the base run's stroke attributes — rebuild each annotation in the
 		// stroke pass carrying stroke attributes of its own, sized so the reading
@@ -1061,7 +1071,7 @@ public class PorticoTextLayoutEngine {
 	/// (platform font, CTFont, or absent/unrecognized — Core Text defaults to
 	/// Helvetica 12). Non-positive sizes fall back too, so percent conversion can
 	/// never divide by zero.
-	private static func pointSize(ofFontAttribute value: Any?) -> CGFloat {
+	static func pointSize(ofFontAttribute value: Any?) -> CGFloat {
 		let size: CGFloat
 		switch value {
 		case nil:
@@ -1120,6 +1130,11 @@ public class PorticoTextLayoutEngine {
 		if orientation == .vertical {
 			// .verticalGlyphForm allows Core Text to substitute vertical variants of characters if the font supports it.
 			mutableString.addAttribute(.verticalGlyphForm, value: true, range: fullRange)
+			// 縦中横 (slice 4): reserve one column cell per auto-detected group
+			// — on the LAYOUT COPY only (the backing store never carries the
+			// delegate/marker; typing inheritance and Aozora serialization
+			// stay clean by construction).
+			PorticoTateChuYoko.applyReservations(to: mutableString)
 		}
 		return mutableString
 	}
