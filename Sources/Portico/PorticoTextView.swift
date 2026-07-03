@@ -93,7 +93,14 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 	}
 	
 	public override func doCommand(by selector: Selector) {
-		if selector == #selector(deleteBackward(_:)) {
+		if selector == #selector(insertNewline(_:)) {
+			// Return outside composition = a hard line break (during
+			// composition the input context consumes Return to confirm, so
+			// this arm never sees it). Without this arm the command falls
+			// through unhandled and Return is silently dropped.
+			layoutEngine.insertText("\n")
+			setNeedsDisplay(bounds)
+		} else if selector == #selector(deleteBackward(_:)) {
 			layoutEngine.deleteBackward()
 			setNeedsDisplay(bounds)
 		} else if selector == #selector(moveLeft(_:)) {

@@ -1,6 +1,9 @@
 import Testing
 import Foundation
 import CoreGraphics
+#if canImport(AppKit)
+import AppKit
+#endif
 @testable import Portico
 
 private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizontal) -> PorticoTextLayoutEngine {
@@ -311,6 +314,20 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 	e.insertText("感") // commit
 	#expect(view.undoManager === e.undoManager) // restored after commit
 }
+
+#if os(macOS)
+@Test @MainActor func returnKeyInsertsHardLineBreak() {
+	// Row-12 gate finding: AppKit maps Return (outside composition) to the
+	// `insertNewline:` command — without a doCommand arm it was silently
+	// dropped, making multi-line text unreachable from the keyboard.
+	let e = engine("")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.insertText("一行目")
+	view.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+	e.insertText("二行目")
+	#expect(e.attributedString.string == "一行目\n二行目")
+}
+#endif
 
 @Test func wrappingEngineInViewDoesNotClearUndo() {
 	// Contract: attaching a view to an injected engine must NOT clear its undo (no reset-on-attach).
