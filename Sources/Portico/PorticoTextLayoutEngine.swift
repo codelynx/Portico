@@ -1182,6 +1182,37 @@ public class PorticoTextLayoutEngine {
 		return CTFrameGetVisibleStringRange(textFrame).length
 	}
 
+	/// Typographic advance width of a ruby reading at ruby scale (Core Text's
+	/// default 0.5 × the base font size). Used by `inkBounds()` to account for
+	/// reading overhang past a line edge. Falls back to a per-character
+	/// approximation when the base run carries no font (CT default metrics).
+	private static func rubyReadingTypographicWidth(
+		_ reading: String,
+		baseAttributes: [NSAttributedString.Key: Any]
+	) -> CGFloat {
+		let baseSize: CGFloat
+		if let value = baseAttributes[.font],
+		   CFGetTypeID(value as CFTypeRef) == CTFontGetTypeID() || value is CTFont {
+			baseSize = CTFontGetSize(value as! CTFont)
+		} else if let value = baseAttributes[.font] {
+			// Platform font (NSFont/UIFont) — toll-free usable as CTFont for size.
+			baseSize = CTFontGetSize(value as! CTFont)
+		} else {
+			baseSize = 12
+		}
+		let rubySize = baseSize * 0.5
+		guard let value = baseAttributes[.font] else {
+			// No font attribute: kana-monospace approximation.
+			return CGFloat(reading.utf16.count) * rubySize
+		}
+		let rubyFont = CTFontCreateCopyWithAttributes(value as! CTFont, rubySize, nil, nil)
+		let attributed = NSAttributedString(string: reading, attributes: [
+			NSAttributedString.Key(kCTFontAttributeName as String): rubyFont
+		])
+		let line = CTLineCreateWithAttributedString(attributed as CFAttributedString)
+		return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+	}
+
 	/// Maps a line-local rect (CTLine bounds coordinates: x along the line's advance
 	/// axis from the line origin, y baseline-relative with +y on the ascent side) into
 	/// engine (Core Text bottom-left) space. Orientation-aware: horizontal lines
@@ -1225,10 +1256,42 @@ public class PorticoTextLayoutEngine {
 
 		var union = CGRect.null
 		for (line, origin) in zip(lines, origins) {
-			let local = CTLineGetBoundsWithOptions(line, [.useGlyphPathBounds])
+			var local = CTLineGetBoundsWithOptions(line, [.useGlyphPathBounds])
 			// Empty lines (e.g. "\n\n") yield null/empty glyph bounds — skip, or the
 			// union degrades.
 			guard !local.isNull, !local.isEmpty else { continue }
+
+			// LINE-EDGE ruby overhang: glyph-path line bounds include ruby
+			// glyphs, but a reading WIDER than its base overhangs the base's
+			// advance span — and past the line's FIRST/LAST advance that
+			// overhang is painted yet excluded from the line bounds (observed:
+			// line-final long reading in vertical; caught by the MangaLoft
+			// integration containment test). Extend the line-local advance
+			// range by each intersecting group's reading overhang. Extending
+			// mid-line groups too is harmless (their neighbors' ink already
+			// unions wider).
+			let lineRange = CTLineGetStringRange(line)
+			let nsLineRange = NSRange(location: lineRange.location, length: lineRange.length)
+			for group in PorticoRuby.rubyGroups(in: nsLineRange, of: attributedString) {
+				let start = CTLineGetOffsetForStringIndex(line, group.base.location, nil)
+				let end = CTLineGetOffsetForStringIndex(line, group.base.location + group.base.length, nil)
+				let baseSpan = abs(end - start)
+				let readingWidth = Self.rubyReadingTypographicWidth(
+					group.reading,
+					baseAttributes: attributedString.length > group.base.location
+						? attributedString.attributes(at: group.base.location, effectiveRange: nil)
+						: [:]
+				)
+				let overhang = max(0, (readingWidth - baseSpan) / 2)
+				guard overhang > 0 else { continue }
+				local = local.union(CGRect(
+					x: min(start, end) - overhang,
+					y: local.minY,
+					width: baseSpan + overhang * 2,
+					height: local.height
+				))
+			}
+
 			union = union.union(lineLocalToEngineRect(local, lineOrigin: origin))
 		}
 		// The outline's rim extends exactly `width` past the glyph edge (stroke
