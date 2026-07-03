@@ -1,6 +1,9 @@
 import Testing
 import Foundation
 import CoreGraphics
+#if canImport(AppKit)
+import AppKit
+#endif
 @testable import Portico
 
 private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizontal) -> PorticoTextLayoutEngine {
@@ -311,6 +314,139 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 	e.insertText("感") // commit
 	#expect(view.undoManager === e.undoManager) // restored after commit
 }
+
+// MARK: - Trailing line break = extra line fragment (closing-smoke A2 finding)
+
+@Test func trailingNewlineReservesOneLinePitchInMeasure() {
+	let font = CTFontCreateWithName("HiraMinProN-W3" as CFString, 14, nil)
+	func measure(_ text: String, _ o: PorticoLayoutOrientation) -> CGSize {
+		PorticoTextLayoutEngine(
+			attributedString: NSAttributedString(string: text, attributes: [.font: font]),
+			orientation: o, bounds: .zero).measuredSize()
+	}
+	// Vertical: block axis = width. The trailing break must widen the box by
+	// roughly one column NOW, not after the next character lands.
+	let v = measure("あいうえお", .vertical)
+	let vBreak = measure("あいうえお\n", .vertical)
+	#expect(vBreak.width > v.width, "vertical: Return reserves a new column immediately")
+	#expect(vBreak.height == v.height)
+	// And it approximates the real next line: one character on line 2.
+	let vReal = measure("あいうえお\nか", .vertical)
+	// The reserved column is pitch-derived while the real one is glyph-
+	// tightened — a few points of slack is fine (it re-measures exactly the
+	// moment a character lands on the line).
+	#expect(abs(vBreak.width - vReal.width) <= 8, "reserved column ≈ the real second column")
+
+	// Horizontal: block axis = height.
+	let h = measure("あいうえお", .horizontal)
+	let hBreak = measure("あいうえお\n", .horizontal)
+	#expect(hBreak.height > h.height, "horizontal: Return reserves a new line immediately")
+	#expect(hBreak.width == h.width)
+}
+
+@Test func caretAfterTrailingNewlineSitsAtNextLineHead() {
+	// The synthesized caret must land where the REAL next line's head is:
+	// compare "あ\n" caret@2 against "あ\nか" caret@2 (か's line head is
+	// exactly where the empty line starts).
+	let font = CTFontCreateWithName("HiraMinProN-W3" as CFString, 14, nil)
+	for orientation in [PorticoLayoutOrientation.vertical, .horizontal] {
+		let broken = PorticoTextLayoutEngine(
+			attributedString: NSAttributedString(string: "あ\n", attributes: [.font: font]),
+			orientation: orientation, bounds: .zero)
+		broken.update(bounds: broken.measuredSize())
+		let synthesized = broken.caretRect(for: 2)
+
+		let real = PorticoTextLayoutEngine(
+			attributedString: NSAttributedString(string: "あ\nか", attributes: [.font: font]),
+			orientation: orientation, bounds: .zero)
+		real.update(bounds: real.measuredSize())
+		let actual = real.caretRect(for: 2)
+
+		#expect(synthesized != .zero, "\(orientation): synthesized caret exists")
+		#expect(abs(synthesized.midX - actual.midX) <= 2,
+		        "\(orientation): caret x ≈ real next-line head (\(synthesized) vs \(actual))")
+		#expect(abs(synthesized.midY - actual.midY) <= 2,
+		        "\(orientation): caret y ≈ real next-line head (\(synthesized) vs \(actual))")
+	}
+}
+
+// MARK: - Typing-attribute inheritance (empty-document font loss, IME-gate finding)
+
+@Test func typingIntoEmptyEngineUsesTypingAttributes() {
+	// Root cause of the "measuredSize fixed points" report: an empty document
+	// had nothing to inherit from and the fallback was NO attributes, so the
+	// first typed run measured/rendered at CT defaults instead of the host's
+	// font. With typingAttributes set, typed text must match parsed content.
+	let font = CTFontCreateWithName("HiraMinProN-W3" as CFString, 14, nil)
+	let typed = engine("", orientation: .vertical)
+	typed.typingAttributes = [.font: font]
+	typed.insertText("同じ")
+	let attrs = typed.attributedString.attributes(at: 0, effectiveRange: nil)
+	#expect(attrs[.font] != nil)
+
+	let parsed = PorticoTextLayoutEngine(
+		attributedString: NSAttributedString(string: "同じ", attributes: [.font: font]),
+		orientation: .vertical, bounds: .zero)
+	#expect(typed.measuredSize() == parsed.measuredSize())
+}
+
+@Test func markedTextInEmptyEngineUsesTypingAttributes() {
+	// The FIRST IME keystroke in an empty document goes through setMarkedText —
+	// it must carry the host font too, or composition renders at CT defaults.
+	let font = CTFontCreateWithName("HiraMinProN-W3" as CFString, 14, nil)
+	let e = engine("")
+	e.typingAttributes = [.font: font]
+	e.setMarkedText("か", selectedRange: NSRange(location: 1, length: 0), replacementRange: nil)
+	let attrs = e.attributedString.attributes(at: 0, effectiveRange: nil)
+	#expect(attrs[.font] != nil)
+}
+
+@Test func deleteAllThenTypeKeepsSeedAttributes() {
+	// Non-empty seed auto-captures typingAttributes at init: emptying the
+	// document and typing again must not drop to CT defaults, even in hosts
+	// that never set typingAttributes explicitly.
+	let font = CTFontCreateWithName("HiraMinProN-W3" as CFString, 14, nil)
+	let e = PorticoTextLayoutEngine(
+		attributedString: NSAttributedString(string: "全部消す", attributes: [.font: font]),
+		orientation: .vertical, bounds: CGSize(width: 2000, height: 2000))
+	e.setSelectedRange(NSRange(location: 0, length: 4))
+	e.deleteBackward()
+	#expect(e.attributedString.length == 0)
+	e.insertText("再入力")
+	let attrs = e.attributedString.attributes(at: 0, effectiveRange: nil)
+	let font2 = attrs[.font]
+	#expect(font2 != nil)
+	if let f = font2 { #expect(CTFontGetSize(f as! CTFont) == 14) }
+}
+
+@Test func insertAtHeadOfDocumentInheritsFollowingAttributes() {
+	// Position 0 of a NON-empty document: inherit from the character after the
+	// insertion point (the old fallback dropped to no-attributes here too).
+	let font = CTFontCreateWithName("HiraMinProN-W3" as CFString, 18, nil)
+	let e = PorticoTextLayoutEngine(
+		attributedString: NSAttributedString(string: "本文", attributes: [.font: font]),
+		orientation: .horizontal, bounds: CGSize(width: 2000, height: 2000))
+	e.cursorIndex = 0
+	e.insertText("頭")
+	let attrs = e.attributedString.attributes(at: 0, effectiveRange: nil)
+	let inserted = attrs[.font]
+	#expect(inserted != nil)
+	if let f = inserted { #expect(CTFontGetSize(f as! CTFont) == 18) }
+}
+
+#if os(macOS)
+@Test @MainActor func returnKeyInsertsHardLineBreak() {
+	// Row-12 gate finding: AppKit maps Return (outside composition) to the
+	// `insertNewline:` command — without a doCommand arm it was silently
+	// dropped, making multi-line text unreachable from the keyboard.
+	let e = engine("")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.insertText("一行目")
+	view.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+	e.insertText("二行目")
+	#expect(e.attributedString.string == "一行目\n二行目")
+}
+#endif
 
 @Test func wrappingEngineInViewDoesNotClearUndo() {
 	// Contract: attaching a view to an injected engine must NOT clear its undo (no reset-on-attach).

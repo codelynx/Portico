@@ -65,6 +65,31 @@ public class PorticoTextLayoutEngine {
 	public var drawsCaret: Bool { drawsSelectionHighlight || orientation == .vertical }
 	private var selectionAnchorIndex: Int?
 	public var textDidChange: ((NSAttributedString) -> Void)?
+	/// Base attributes for text entering an EMPTY document (font, colour,
+	/// paragraph style). Without a preceding or following character there is
+	/// nothing to inherit from — and the old empty-dictionary fallback made
+	/// the first typed run silently lose its font: laid out and measured at
+	/// Core Text defaults (12pt), diverging from the same content parsed
+	/// with attributes. Hosts that seed an engine with an empty string MUST
+	/// set this to the same attributes they parse content with.
+	public var typingAttributes: [NSAttributedString.Key: Any] = [:]
+
+	/// Attributes for text entering the document at `target`: inherit from
+	/// the character BEFORE the replaced span; at the head of a non-empty
+	/// document, from the first character AFTER it; in an empty document,
+	/// from `typingAttributes`.
+	private func inheritedAttributes(
+		at target: NSRange, in string: NSAttributedString
+	) -> [NSAttributedString.Key: Any] {
+		if target.location > 0, target.location - 1 < string.length {
+			return string.attributes(at: target.location - 1, effectiveRange: nil)
+		}
+		let after = target.location + target.length
+		if after < string.length {
+			return string.attributes(at: after, effectiveRange: nil)
+		}
+		return typingAttributes
+	}
 	/// Framework-internal (set by `PorticoView`, **not** part of the client observation API): fired
 	/// after every content relayout so the view repaints on engine-driven changes it didn't
 	/// initiate — undo/redo, a client's `setRuby`. A **single slot** the view overwrites, so a live
@@ -92,10 +117,27 @@ public class PorticoTextLayoutEngine {
 	private var frameSetter: CTFramesetter?
 	private var textFrame: CTFrame?
 
-	public init(attributedString: NSAttributedString, orientation: PorticoLayoutOrientation = .horizontal, bounds: CGSize = .zero, undoManager: UndoManager? = nil) {
+	public init(attributedString: NSAttributedString, orientation: PorticoLayoutOrientation = .horizontal, bounds: CGSize = .zero, undoManager: UndoManager? = nil,
+				typingAttributes: [NSAttributedString.Key: Any] = [:]) {
 		self.attributedString = attributedString
 		self.orientation = orientation
 		self.bounds = bounds
+		if !typingAttributes.isEmpty {
+			// Construction-site contract: hosts seeding an EMPTY engine pass the
+			// base attributes here (discoverable where the empty engine is born).
+			self.typingAttributes = typingAttributes
+		} else if attributedString.length > 0 {
+			// Non-empty seed: capture the first run's attributes as the fallback,
+			// so select-all → delete → type doesn't drop to CT defaults in hosts
+			// that never set `typingAttributes`. Insertion into non-empty text
+			// inherits from neighbors and never consults this; it only matters
+			// once the document has been emptied. Ruby/IME-underline are
+			// per-run state, not typing defaults — strip them.
+			var captured = attributedString.attributes(at: 0, effectiveRange: nil)
+			captured.removeValue(forKey: PorticoRuby.rubyKey)
+			captured.removeValue(forKey: NSAttributedString.Key(kCTUnderlineStyleAttributeName as String))
+			self.typingAttributes = captured
+		}
 		if let undoManager {
 			self.undoManager = undoManager
 		} else {
@@ -312,7 +354,7 @@ public class PorticoTextLayoutEngine {
 			targetRange = NSRange(location: cursorIndex, length: 0)
 		}
 
-		let attrs = cursorIndex > 0 ? mutableString.attributes(at: cursorIndex - 1, effectiveRange: nil) : [:]
+		let attrs = inheritedAttributes(at: targetRange, in: mutableString)
 		var markedAttrs = attrs
 		markedAttrs[NSAttributedString.Key(kCTUnderlineStyleAttributeName as String)] = CTUnderlineStyle.single.rawValue
 		// Same ruby attribute-edge rule as insertText: composing text joins a ruby group only
@@ -457,7 +499,7 @@ public class PorticoTextLayoutEngine {
 			targetRange = NSRange(location: cursorIndex, length: 0)
 		}
 
-		let attrs = cursorIndex > 0 ? mutableString.attributes(at: cursorIndex - 1, effectiveRange: nil) : [:]
+		let attrs = inheritedAttributes(at: targetRange, in: mutableString)
 		var cleanAttrs = attrs
 		// Don't carry the IME underline into committed text.
 		cleanAttrs.removeValue(forKey: NSAttributedString.Key(kCTUnderlineStyleAttributeName as String))
@@ -526,9 +568,8 @@ public class PorticoTextLayoutEngine {
 	/// its parsed ruby annotations. Plain pasted text (no `《》`) inserts as plain text.
 	func insertNotation(_ notation: String) {
 		beginUndoStep() // paste is one discrete undo step
-		var contextAttrs: [NSAttributedString.Key: Any] =
-			(cursorIndex > 0 && cursorIndex <= attributedString.length)
-			? attributedString.attributes(at: cursorIndex - 1, effectiveRange: nil) : [:]
+		let pasteTarget = markedRange ?? selectionRange ?? NSRange(location: cursorIndex, length: 0)
+		var contextAttrs = inheritedAttributes(at: pasteTarget, in: attributedString)
 		contextAttrs.removeValue(forKey: NSAttributedString.Key(kCTUnderlineStyleAttributeName as String))
 		contextAttrs.removeValue(forKey: PorticoRuby.rubyKey)
 		insertAttributedText(PorticoRuby.parse(notation, attributes: contextAttrs))
@@ -705,6 +746,36 @@ public class PorticoTextLayoutEngine {
 		
 		var origins = [CGPoint](repeating: .zero, count: lines.count)
 		CTFrameGetLineOrigins(textFrame, CFRangeMake(0, 0), &origins)
+
+		// Extra line fragment: the caret after a TRAILING hard break sits at
+		// the head of a line that has no CTLine yet — synthesize it from the
+		// last real line's origin advanced one pitch on the block axis
+		// (leftward column for vertical, downward line for horizontal), at
+		// inline offset 0 (the line head). Without this the offset-past-the-
+		// newline formula below drops the caret past the END of the previous
+		// line — visually outside the box.
+		if index == attributedString.length, hasTrailingLineBreak,
+		   let lastOrigin = origins.last, let lastLine = lines.last {
+			var ascent: CGFloat = 0
+			var descent: CGFloat = 0
+			var leading: CGFloat = 0
+			CTLineGetTypographicBounds(lastLine, &ascent, &descent, &leading)
+			let pitch = effectiveLinePitch
+			if orientation == .vertical {
+				let caretThickness: CGFloat = 2
+				return CGRect(
+					x: lastOrigin.x - pitch - descent,
+					y: lastOrigin.y - caretThickness, // inline offset 0 = column top
+					width: ascent + descent,
+					height: caretThickness)
+			} else {
+				return CGRect(
+					x: lastOrigin.x, // inline offset 0 = line head
+					y: lastOrigin.y - pitch - descent,
+					width: 2,
+					height: ascent + descent)
+			}
+		}
 		
 		for i in 0..<lines.count {
 			let line = lines[i]
@@ -838,11 +909,10 @@ public class PorticoTextLayoutEngine {
 	/// the font Core Text actually uses (including CJK fallbacks) and the real ruby
 	/// ascent, so no hand-tuned reserve ratio is needed.
 	private func rubyLinePitch() -> CGFloat {
-		var attrs: [NSAttributedString.Key: Any] = [:]
-		if attributedString.length > 0 {
-			attrs = attributedString.attributes(at: 0, effectiveRange: nil)
-			attrs.removeValue(forKey: NSAttributedString.Key(kCTRubyAnnotationAttributeName as String))
-		}
+		var attrs = attributedString.length > 0
+			? attributedString.attributes(at: 0, effectiveRange: nil)
+			: typingAttributes
+		attrs.removeValue(forKey: NSAttributedString.Key(kCTRubyAnnotationAttributeName as String))
 		let sample = NSMutableAttributedString(string: "永", attributes: attrs) // representative CJK glyph
 		let annotation = CTRubyAnnotationCreateWithAttributes(.center, .auto, .before, "ル" as CFString, [:] as CFDictionary)
 		sample.addAttribute(
@@ -891,6 +961,16 @@ public class PorticoTextLayoutEngine {
 	/// the `measuredSize` block-extent floor) — the single source keeping the two
 	/// consumption sites coherent.
 	private var effectiveLinePitch: CGFloat { rubyLinePitch() * _linePitchMultiplier }
+
+	/// A trailing hard line break has NO CTLine of its own (the `\n` belongs
+	/// to the line it terminates), so the "next line" the user just created
+	/// with Return exists only logically until a character lands on it. Both
+	/// `measuredSize` (reserve one pitch of block extent) and `caretRect`
+	/// (synthesize the next line's head) must account for it — the classic
+	/// extra-line-fragment every text engine synthesizes.
+	private var hasTrailingLineBreak: Bool {
+		attributedString.string.hasSuffix("\n")
+	}
 
 	/// Whole-text outline; nil = off (default). Setting a different value (including
 	/// a color-only change) invalidates the cached stroke frame and repaints a live
@@ -1151,6 +1231,14 @@ public class PorticoTextLayoutEngine {
 				}
 				size = withBlockExtent(size, hi)
 			}
+		}
+		// Extra line fragment: a trailing hard break's "next line" has no
+		// CTLine, so the measured block extent must reserve one pitch for it
+		// — otherwise Return doesn't grow the box until the next character
+		// lands (and the caret has no room to sit in).
+		if hasTrailingLineBreak {
+			let block = (orientation == .vertical ? size.width : size.height) + ceil(effectiveLinePitch)
+			size = withBlockExtent(size, block)
 		}
 		return size
 	}

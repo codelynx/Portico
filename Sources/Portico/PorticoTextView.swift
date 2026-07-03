@@ -29,6 +29,19 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 	public override var isFlipped: Bool { return false }
 	public override var acceptsFirstResponder: Bool { return true }
 
+	/// When `true`, the view claims first responder as soon as it lands in a
+	/// window — for hosts that mount the editor programmatically (an in-place
+	/// overlay opened by a tool gesture) rather than via a user click on the
+	/// view itself. One-shot per attach; a later re-attach re-claims only if
+	/// still set. Default `false`: plain embeds keep click-to-focus.
+	public var focusesOnMount: Bool = false
+
+	public override func viewDidMoveToWindow() {
+		super.viewDidMoveToWindow()
+		guard focusesOnMount, let window else { return }
+		window.makeFirstResponder(self)
+	}
+
 	/// Vend the engine's undo manager up the responder chain, so Edit ▸ Undo/Redo and ⌘Z drive the
 	/// engine's model-scoped stack (§1) — but **`nil` while composing** (marked text active), which
 	/// greys out the menu *and* blocks ⌘Z: every system entry point resolves through this property,
@@ -80,7 +93,14 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 	}
 	
 	public override func doCommand(by selector: Selector) {
-		if selector == #selector(deleteBackward(_:)) {
+		if selector == #selector(insertNewline(_:)) {
+			// Return outside composition = a hard line break (during
+			// composition the input context consumes Return to confirm, so
+			// this arm never sees it). Without this arm the command falls
+			// through unhandled and Return is silently dropped.
+			layoutEngine.insertText("\n")
+			setNeedsDisplay(bounds)
+		} else if selector == #selector(deleteBackward(_:)) {
 			layoutEngine.deleteBackward()
 			setNeedsDisplay(bounds)
 		} else if selector == #selector(moveLeft(_:)) {
@@ -335,6 +355,18 @@ public class PorticoTextView: UIView, UITextInput {
 
 	public override var canBecomeFirstResponder: Bool { return true }
 
+	/// When `true`, the view claims first responder as soon as it lands in a
+	/// window — for hosts that mount the editor programmatically (an in-place
+	/// overlay opened by a tool gesture) rather than via a user touch on the
+	/// view itself. Default `false`: plain embeds keep tap-to-focus.
+	public var focusesOnMount: Bool = false
+
+	public override func didMoveToWindow() {
+		super.didMoveToWindow()
+		guard focusesOnMount, window != nil else { return }
+		becomeFirstResponder()
+	}
+
 	/// Vend the engine's undo manager up the responder chain, so ⌘Z / shake-to-undo drive the
 	/// engine's model-scoped stack (§1) — but **`nil` while composing** (marked text active), so
 	/// undoing mid-composition (which would desync the IME) is blocked at every entry point.
@@ -373,6 +405,23 @@ public class PorticoTextView: UIView, UITextInput {
 		} else if !engineOwnsCaret, caretTintCleared {
 			tintColor = nil
 			caretTintCleared = false
+		}
+		// The tint trick stopped hiding the caret on modern UIKit (observed
+		// iPadOS 26: the system cursor view no longer follows tintColor), so
+		// ALSO deactivate the selection-display interaction while the engine
+		// owns the caret. Safe: engine-owns is defined as no selection AND no
+		// composition, so the system display has nothing else to show; it
+		// reactivates the moment a selection or marked text appears (handles,
+		// highlight, and the system caret all come back). `caretRect` stays
+		// honest throughout — candidate-window placement is unaffected.
+		if #available(iOS 17.0, *) {
+			for interaction in interactions {
+				if let display = interaction as? UITextSelectionDisplayInteraction {
+					if display.isActivated == engineOwnsCaret {
+						display.isActivated = !engineOwnsCaret
+					}
+				}
+			}
 		}
 	}
 

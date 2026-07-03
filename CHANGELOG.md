@@ -2,6 +2,37 @@
 
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
+## [0.4.2] - 2026-07-04
+Patch-class fixes to the shipped editing surface, all found by MangaLoft's slice-3 editor
+integration + device gauntlet (real IME, Mac + iPadOS 26).
+
+### Added
+- **`typingAttributes`** — base attributes for text entering an EMPTY document (typing, the
+  first IME keystroke, paste). Settable property AND `init` parameter; a non-empty seed
+  string auto-captures its first run's attributes as the fallback (protects
+  select-all → delete → type). Root cause of the reported "measuredSize divergence": the
+  old empty-dictionary fallback made the first typed run lay out and measure at Core Text
+  defaults instead of the host's font — `measuredSize` itself was deterministic all along.
+  Head-of-document inserts now inherit from the FOLLOWING character (same fallback family).
+- **`focusesOnMount`** on `PorticoTextView` / `PorticoView(engine:)` — claims first
+  responder when the view lands in a window, for hosts that mount the editor
+  programmatically (an in-place overlay opened by a tool gesture). Default off.
+
+### Fixed
+- **Return inserts a hard line break** (macOS): `doCommand(by:)` had no `insertNewline:`
+  arm, so Return outside composition was silently dropped — multi-line text was
+  unreachable from the keyboard. (Return during composition still confirms the conversion.)
+- **Trailing hard break = extra line fragment**: the "next line" created by Return has no
+  CTLine until a character lands on it — `measuredSize` now reserves one line pitch on the
+  block axis and `caretRect` synthesizes the next line's head, so Return takes effect
+  visibly at once (box grows; caret jumps to the new line/column top).
+- **System caret conflict in vertical text on modern UIKit** (observed iPadOS 26): the
+  tint-clearing trick no longer hides the system cursor view, so both the engine's vertical
+  caret and UIKit's horizontal-text caret drew at once. While the engine owns the caret
+  (vertical + no selection + no composition) the view now deactivates
+  `UITextSelectionDisplayInteraction`; it reactivates the moment a selection or marked text
+  appears, so native handles/highlight/IME UI are unaffected.
+
 ## [0.4.1] - 2026-07-02
 ### Fixed
 - **`inkBounds()` now includes line-edge ruby reading overhang.** A reading wider

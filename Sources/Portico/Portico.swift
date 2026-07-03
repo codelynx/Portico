@@ -22,6 +22,9 @@ public struct PorticoView: NSViewRepresentable {
 	private var orientation: PorticoLayoutOrientation?
 	private var selectedRange: Binding<NSRange?>?
 	private var onSelectionMenuAction: PorticoSelectionMenuAction?
+	/// Injected-engine hosts that open the editor programmatically (overlay
+	/// pattern) set this so typing lands in the editor without a click/tap.
+	private var focusesOnMount: Bool = false
 
 	/// Convenience: Portico owns the engine internally, driven by the `text` binding. Undo history
 	/// is **view-scoped** (lives with this view). For document/model-scoped undo that survives view
@@ -46,11 +49,13 @@ public struct PorticoView: NSViewRepresentable {
 	///   per engine to switch documents, and use **one live view per engine**.
 	public init(engine: PorticoTextLayoutEngine, orientation: PorticoLayoutOrientation? = nil,
 				selectedRange: Binding<NSRange?>? = nil,
-				onSelectionMenuAction: PorticoSelectionMenuAction? = nil) {
+				onSelectionMenuAction: PorticoSelectionMenuAction? = nil,
+				focusesOnMount: Bool = false) {
 		self.providedEngine = engine
 		self.orientation = orientation
 		self.selectedRange = selectedRange
 		self.onSelectionMenuAction = onSelectionMenuAction
+		self.focusesOnMount = focusesOnMount
 	}
 
 	public func makeNSView(context: Context) -> PorticoTextView {
@@ -69,6 +74,7 @@ public struct PorticoView: NSViewRepresentable {
 		}
 		let view = PorticoTextView(frame: .zero, layoutEngine: engine)
 		view.onSelectionMenuAction = onSelectionMenuAction
+		view.focusesOnMount = focusesOnMount
 		return view
 	}
 
@@ -94,6 +100,9 @@ public struct PorticoView: UIViewRepresentable {
 	private var orientation: PorticoLayoutOrientation?
 	private var selectedRange: Binding<NSRange?>?
 	private var onSelectionMenuAction: PorticoSelectionMenuAction?
+	/// Injected-engine hosts that open the editor programmatically (overlay
+	/// pattern) set this so typing lands in the editor without a click/tap.
+	private var focusesOnMount: Bool = false
 
 	/// Convenience: Portico owns the engine internally, driven by the `text` binding. Undo history
 	/// is **view-scoped**. For document/model-scoped undo that survives view teardown, use
@@ -119,11 +128,13 @@ public struct PorticoView: UIViewRepresentable {
 	///   per engine to switch documents, and use **one live view per engine**.
 	public init(engine: PorticoTextLayoutEngine, orientation: PorticoLayoutOrientation? = nil,
 				selectedRange: Binding<NSRange?>? = nil,
-				onSelectionMenuAction: PorticoSelectionMenuAction? = nil) {
+				onSelectionMenuAction: PorticoSelectionMenuAction? = nil,
+				focusesOnMount: Bool = false) {
 		self.providedEngine = engine
 		self.orientation = orientation
 		self.selectedRange = selectedRange
 		self.onSelectionMenuAction = onSelectionMenuAction
+		self.focusesOnMount = focusesOnMount
 	}
 
 	public func makeUIView(context: Context) -> PorticoTextView {
@@ -142,6 +153,7 @@ public struct PorticoView: UIViewRepresentable {
 		}
 		let view = PorticoTextView(frame: .zero, layoutEngine: engine)
 		view.onSelectionMenuAction = onSelectionMenuAction
+		view.focusesOnMount = focusesOnMount
 		return view
 	}
 
