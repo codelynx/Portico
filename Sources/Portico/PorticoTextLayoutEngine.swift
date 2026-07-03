@@ -117,10 +117,27 @@ public class PorticoTextLayoutEngine {
 	private var frameSetter: CTFramesetter?
 	private var textFrame: CTFrame?
 
-	public init(attributedString: NSAttributedString, orientation: PorticoLayoutOrientation = .horizontal, bounds: CGSize = .zero, undoManager: UndoManager? = nil) {
+	public init(attributedString: NSAttributedString, orientation: PorticoLayoutOrientation = .horizontal, bounds: CGSize = .zero, undoManager: UndoManager? = nil,
+				typingAttributes: [NSAttributedString.Key: Any] = [:]) {
 		self.attributedString = attributedString
 		self.orientation = orientation
 		self.bounds = bounds
+		if !typingAttributes.isEmpty {
+			// Construction-site contract: hosts seeding an EMPTY engine pass the
+			// base attributes here (discoverable where the empty engine is born).
+			self.typingAttributes = typingAttributes
+		} else if attributedString.length > 0 {
+			// Non-empty seed: capture the first run's attributes as the fallback,
+			// so select-all → delete → type doesn't drop to CT defaults in hosts
+			// that never set `typingAttributes`. Insertion into non-empty text
+			// inherits from neighbors and never consults this; it only matters
+			// once the document has been emptied. Ruby/IME-underline are
+			// per-run state, not typing defaults — strip them.
+			var captured = attributedString.attributes(at: 0, effectiveRange: nil)
+			captured.removeValue(forKey: PorticoRuby.rubyKey)
+			captured.removeValue(forKey: NSAttributedString.Key(kCTUnderlineStyleAttributeName as String))
+			self.typingAttributes = captured
+		}
 		if let undoManager {
 			self.undoManager = undoManager
 		} else {

@@ -346,6 +346,24 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 	#expect(attrs[.font] != nil)
 }
 
+@Test func deleteAllThenTypeKeepsSeedAttributes() {
+	// Non-empty seed auto-captures typingAttributes at init: emptying the
+	// document and typing again must not drop to CT defaults, even in hosts
+	// that never set typingAttributes explicitly.
+	let font = CTFontCreateWithName("HiraMinProN-W3" as CFString, 14, nil)
+	let e = PorticoTextLayoutEngine(
+		attributedString: NSAttributedString(string: "全部消す", attributes: [.font: font]),
+		orientation: .vertical, bounds: CGSize(width: 2000, height: 2000))
+	e.setSelectedRange(NSRange(location: 0, length: 4))
+	e.deleteBackward()
+	#expect(e.attributedString.length == 0)
+	e.insertText("再入力")
+	let attrs = e.attributedString.attributes(at: 0, effectiveRange: nil)
+	let font2 = attrs[.font]
+	#expect(font2 != nil)
+	if let f = font2 { #expect(CTFontGetSize(f as! CTFont) == 14) }
+}
+
 @Test func insertAtHeadOfDocumentInheritsFollowingAttributes() {
 	// Position 0 of a NON-empty document: inherit from the character after the
 	// insertion point (the old fallback dropped to no-attributes here too).
