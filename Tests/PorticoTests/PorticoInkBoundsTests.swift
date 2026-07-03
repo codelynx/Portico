@@ -1,6 +1,11 @@
 import Testing
 import Foundation
 import CoreGraphics
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 @testable import Portico
 
 // MARK: - Ink-bounds tests (PR-5: inkBounds() core — no outline outset yet, that's PR-4)
@@ -11,6 +16,12 @@ import CoreGraphics
 // corrected fallback (real reading extents, NOT base-glyph rects).
 
 private let boundsSize = CGSize(width: 400, height: 400)
+
+#if canImport(UIKit)
+private let bigInkFont = UIFont.systemFont(ofSize: 36)
+#elseif canImport(AppKit)
+private let bigInkFont = NSFont.systemFont(ofSize: 36)
+#endif
 
 private func laidOutEngine(
 	_ attributed: NSAttributedString,
@@ -93,6 +104,55 @@ private func laidOutEngine(
 			#expect(ruby.maxY > plain.maxY + 1)
 		}
 	}
+}
+
+@Test func inkBoundsContainLineFinalLongReadingRuby() {
+	// Regression (found by the MangaLoft integration containment test): a
+	// reading wider than its base, sitting at the LINE END, overhangs past the
+	// line's last advance — line glyph-path bounds exclude that overhang.
+	// Padded-bitmap containment in both orientations, big font for margin.
+	let pad: CGFloat = 60
+	for orientation in [PorticoLayoutOrientation.horizontal, .vertical] {
+		let attributed = NSMutableAttributedString(
+			attributedString: PorticoRuby.parse("\u{3000}\u{3000}世《せかい》"))
+		attributed.addAttribute(
+			.font, value: bigInkFont, range: NSRange(location: 0, length: attributed.length))
+		let e = PorticoTextLayoutEngine(
+			attributedString: attributed, orientation: orientation, bounds: boundsSize)
+		let ink = e.inkBounds()
+
+		let w = Int(boundsSize.width + 2 * pad), h = Int(boundsSize.height + 2 * pad)
+		var data = [UInt8](repeating: 0, count: w * h * 4)
+		data.withUnsafeMutableBytes { buffer in
+			let ctx = CGContext(
+				data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+				bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+				bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+			ctx.translateBy(x: pad, y: pad)
+			e.drawText(in: ctx)
+		}
+		var painted = CGRect.null
+		for py in 0..<h {
+			for px in 0..<w where data[(py * w + px) * 4 + 3] != 0 {
+				painted = painted.union(CGRect(
+					x: CGFloat(px) - pad, y: CGFloat(h - 1 - py) - pad, width: 1, height: 1))
+			}
+		}
+		#expect(!painted.isNull)
+		#expect(ink.insetBy(dx: -1.5, dy: -1.5).contains(painted),
+			"\(orientation): ink \(ink) must contain painted \(painted)")
+	}
+}
+
+@Test func inkBoundsToleratesForeignFontAttributeValue() {
+	// 0.4.1 hardening: a non-font value under `.font` must degrade to the
+	// approximation in the ruby-overhang path, never force-cast-trap.
+	let attributed = NSMutableAttributedString(attributedString: PorticoRuby.parse("世《せかい》"))
+	attributed.addAttribute(.font, value: "not a font", range: NSRange(location: 0, length: attributed.length))
+	let e = PorticoTextLayoutEngine(
+		attributedString: attributed, orientation: .vertical, bounds: boundsSize)
+	let ink = e.inkBounds() // must not crash
+	#expect(!ink.isNull)
 }
 
 @Test func inkBoundsAllNewlinesIsNull() {

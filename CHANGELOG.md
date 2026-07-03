@@ -2,6 +2,16 @@
 
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
+## [0.4.1] - 2026-07-02
+### Fixed
+- **`inkBounds()` now includes line-edge ruby reading overhang.** A reading wider
+  than its base sitting at a line's first/last advance painted outside the
+  reported ink rect (observed: line-final long reading in vertical; found by
+  MangaLoft's integration containment test). The union now extends each
+  line-intersecting ruby group's advance range by the reading's typographic
+  overhang. Foreign (non-font) values under `.font` degrade to an approximation
+  in this path rather than trapping.
+
 ## [0.4.0] - 2026-07-02
 ### Added — the manga-lettering / headless-canvas surface (all additive)
 Driven by Portico's first real client (MangaLoft text objects); plan + as-built record in
