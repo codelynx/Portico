@@ -315,6 +315,61 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 	#expect(view.undoManager === e.undoManager) // restored after commit
 }
 
+// MARK: - Trailing line break = extra line fragment (closing-smoke A2 finding)
+
+@Test func trailingNewlineReservesOneLinePitchInMeasure() {
+	let font = CTFontCreateWithName("HiraMinProN-W3" as CFString, 14, nil)
+	func measure(_ text: String, _ o: PorticoLayoutOrientation) -> CGSize {
+		PorticoTextLayoutEngine(
+			attributedString: NSAttributedString(string: text, attributes: [.font: font]),
+			orientation: o, bounds: .zero).measuredSize()
+	}
+	// Vertical: block axis = width. The trailing break must widen the box by
+	// roughly one column NOW, not after the next character lands.
+	let v = measure("あいうえお", .vertical)
+	let vBreak = measure("あいうえお\n", .vertical)
+	#expect(vBreak.width > v.width, "vertical: Return reserves a new column immediately")
+	#expect(vBreak.height == v.height)
+	// And it approximates the real next line: one character on line 2.
+	let vReal = measure("あいうえお\nか", .vertical)
+	// The reserved column is pitch-derived while the real one is glyph-
+	// tightened — a few points of slack is fine (it re-measures exactly the
+	// moment a character lands on the line).
+	#expect(abs(vBreak.width - vReal.width) <= 8, "reserved column ≈ the real second column")
+
+	// Horizontal: block axis = height.
+	let h = measure("あいうえお", .horizontal)
+	let hBreak = measure("あいうえお\n", .horizontal)
+	#expect(hBreak.height > h.height, "horizontal: Return reserves a new line immediately")
+	#expect(hBreak.width == h.width)
+}
+
+@Test func caretAfterTrailingNewlineSitsAtNextLineHead() {
+	// The synthesized caret must land where the REAL next line's head is:
+	// compare "あ\n" caret@2 against "あ\nか" caret@2 (か's line head is
+	// exactly where the empty line starts).
+	let font = CTFontCreateWithName("HiraMinProN-W3" as CFString, 14, nil)
+	for orientation in [PorticoLayoutOrientation.vertical, .horizontal] {
+		let broken = PorticoTextLayoutEngine(
+			attributedString: NSAttributedString(string: "あ\n", attributes: [.font: font]),
+			orientation: orientation, bounds: .zero)
+		broken.update(bounds: broken.measuredSize())
+		let synthesized = broken.caretRect(for: 2)
+
+		let real = PorticoTextLayoutEngine(
+			attributedString: NSAttributedString(string: "あ\nか", attributes: [.font: font]),
+			orientation: orientation, bounds: .zero)
+		real.update(bounds: real.measuredSize())
+		let actual = real.caretRect(for: 2)
+
+		#expect(synthesized != .zero, "\(orientation): synthesized caret exists")
+		#expect(abs(synthesized.midX - actual.midX) <= 2,
+		        "\(orientation): caret x ≈ real next-line head (\(synthesized) vs \(actual))")
+		#expect(abs(synthesized.midY - actual.midY) <= 2,
+		        "\(orientation): caret y ≈ real next-line head (\(synthesized) vs \(actual))")
+	}
+}
+
 // MARK: - Typing-attribute inheritance (empty-document font loss, IME-gate finding)
 
 @Test func typingIntoEmptyEngineUsesTypingAttributes() {

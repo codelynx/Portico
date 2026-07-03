@@ -746,6 +746,36 @@ public class PorticoTextLayoutEngine {
 		
 		var origins = [CGPoint](repeating: .zero, count: lines.count)
 		CTFrameGetLineOrigins(textFrame, CFRangeMake(0, 0), &origins)
+
+		// Extra line fragment: the caret after a TRAILING hard break sits at
+		// the head of a line that has no CTLine yet — synthesize it from the
+		// last real line's origin advanced one pitch on the block axis
+		// (leftward column for vertical, downward line for horizontal), at
+		// inline offset 0 (the line head). Without this the offset-past-the-
+		// newline formula below drops the caret past the END of the previous
+		// line — visually outside the box.
+		if index == attributedString.length, hasTrailingLineBreak,
+		   let lastOrigin = origins.last, let lastLine = lines.last {
+			var ascent: CGFloat = 0
+			var descent: CGFloat = 0
+			var leading: CGFloat = 0
+			CTLineGetTypographicBounds(lastLine, &ascent, &descent, &leading)
+			let pitch = effectiveLinePitch
+			if orientation == .vertical {
+				let caretThickness: CGFloat = 2
+				return CGRect(
+					x: lastOrigin.x - pitch - descent,
+					y: lastOrigin.y - caretThickness, // inline offset 0 = column top
+					width: ascent + descent,
+					height: caretThickness)
+			} else {
+				return CGRect(
+					x: lastOrigin.x, // inline offset 0 = line head
+					y: lastOrigin.y - pitch - descent,
+					width: 2,
+					height: ascent + descent)
+			}
+		}
 		
 		for i in 0..<lines.count {
 			let line = lines[i]
@@ -931,6 +961,16 @@ public class PorticoTextLayoutEngine {
 	/// the `measuredSize` block-extent floor) — the single source keeping the two
 	/// consumption sites coherent.
 	private var effectiveLinePitch: CGFloat { rubyLinePitch() * _linePitchMultiplier }
+
+	/// A trailing hard line break has NO CTLine of its own (the `\n` belongs
+	/// to the line it terminates), so the "next line" the user just created
+	/// with Return exists only logically until a character lands on it. Both
+	/// `measuredSize` (reserve one pitch of block extent) and `caretRect`
+	/// (synthesize the next line's head) must account for it — the classic
+	/// extra-line-fragment every text engine synthesizes.
+	private var hasTrailingLineBreak: Bool {
+		attributedString.string.hasSuffix("\n")
+	}
 
 	/// Whole-text outline; nil = off (default). Setting a different value (including
 	/// a color-only change) invalidates the cached stroke frame and repaints a live
@@ -1191,6 +1231,14 @@ public class PorticoTextLayoutEngine {
 				}
 				size = withBlockExtent(size, hi)
 			}
+		}
+		// Extra line fragment: a trailing hard break's "next line" has no
+		// CTLine, so the measured block extent must reserve one pitch for it
+		// — otherwise Return doesn't grow the box until the next character
+		// lands (and the caret has no room to sit in).
+		if hasTrailingLineBreak {
+			let block = (orientation == .vertical ? size.width : size.height) + ceil(effectiveLinePitch)
+			size = withBlockExtent(size, block)
 		}
 		return size
 	}
