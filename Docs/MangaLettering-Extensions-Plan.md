@@ -289,7 +289,20 @@ pitch slider by hand) was run and confirmed by the user on device 2026-07-02 —
 GREEN**; the earlier waiver is closed. Guide gained the ink-sized-tile origin-offset recipe and the
 `@MainActor` threading note (round-8 review).
 
-## Known issue: `measuredSize` has multiple non-truncating fixed points (filed 2026-07-03)
+## ~~Known issue~~ ROOT-CAUSED 2026-07-03: "measuredSize fixed points" was empty-document attribute loss
+
+`measuredSize` was a pure function of (content attributes, orientation, pitch) all along. The
+real bug: text inserted into an EMPTY document (typing, IME composition, paste) inherited from
+the empty-dictionary fallback — no font, no paragraph style — so the first typed run laid out
+and measured at Core Text defaults (12pt) while the same content parsed with host attributes
+measured larger. FIXED: `typingAttributes` (host-set base attributes for empty documents) +
+`inheritedAttributes(at:in:)` shared by insertText / setMarkedText / insertNotation /
+rubyLinePitch; head-of-document inserts now inherit from the FOLLOWING character. Hosts that
+seed engines with empty strings must set `typingAttributes`. Regression tests:
+typing/marked/paste parity with parsed content. The original report below is retained for the
+symptom record.
+
+## Original report (superseded): `measuredSize` has multiple non-truncating fixed points (filed 2026-07-03)
 
 Found by MangaLoft slice-3 PR-B tests. The same content + style + orientation can measure
 differently depending on the engine's bounds state at the time of the call — e.g. two vertical

@@ -315,6 +315,52 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 	#expect(view.undoManager === e.undoManager) // restored after commit
 }
 
+// MARK: - Typing-attribute inheritance (empty-document font loss, IME-gate finding)
+
+@Test func typingIntoEmptyEngineUsesTypingAttributes() {
+	// Root cause of the "measuredSize fixed points" report: an empty document
+	// had nothing to inherit from and the fallback was NO attributes, so the
+	// first typed run measured/rendered at CT defaults instead of the host's
+	// font. With typingAttributes set, typed text must match parsed content.
+	let font = CTFontCreateWithName("HiraMinProN-W3" as CFString, 14, nil)
+	let typed = engine("", orientation: .vertical)
+	typed.typingAttributes = [.font: font]
+	typed.insertText("同じ")
+	let attrs = typed.attributedString.attributes(at: 0, effectiveRange: nil)
+	#expect(attrs[.font] != nil)
+
+	let parsed = PorticoTextLayoutEngine(
+		attributedString: NSAttributedString(string: "同じ", attributes: [.font: font]),
+		orientation: .vertical, bounds: .zero)
+	#expect(typed.measuredSize() == parsed.measuredSize())
+}
+
+@Test func markedTextInEmptyEngineUsesTypingAttributes() {
+	// The FIRST IME keystroke in an empty document goes through setMarkedText —
+	// it must carry the host font too, or composition renders at CT defaults.
+	let font = CTFontCreateWithName("HiraMinProN-W3" as CFString, 14, nil)
+	let e = engine("")
+	e.typingAttributes = [.font: font]
+	e.setMarkedText("か", selectedRange: NSRange(location: 1, length: 0), replacementRange: nil)
+	let attrs = e.attributedString.attributes(at: 0, effectiveRange: nil)
+	#expect(attrs[.font] != nil)
+}
+
+@Test func insertAtHeadOfDocumentInheritsFollowingAttributes() {
+	// Position 0 of a NON-empty document: inherit from the character after the
+	// insertion point (the old fallback dropped to no-attributes here too).
+	let font = CTFontCreateWithName("HiraMinProN-W3" as CFString, 18, nil)
+	let e = PorticoTextLayoutEngine(
+		attributedString: NSAttributedString(string: "本文", attributes: [.font: font]),
+		orientation: .horizontal, bounds: CGSize(width: 2000, height: 2000))
+	e.cursorIndex = 0
+	e.insertText("頭")
+	let attrs = e.attributedString.attributes(at: 0, effectiveRange: nil)
+	let inserted = attrs[.font]
+	#expect(inserted != nil)
+	if let f = inserted { #expect(CTFontGetSize(f as! CTFont) == 18) }
+}
+
 #if os(macOS)
 @Test @MainActor func returnKeyInsertsHardLineBreak() {
 	// Row-12 gate finding: AppKit maps Return (outside composition) to the
