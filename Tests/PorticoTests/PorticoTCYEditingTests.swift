@@ -380,3 +380,43 @@ private func relayout(_ engine: PorticoTextLayoutEngine) {
 	let back = engine.index(from: 1, moving: .left)
 	#expect(back >= 3, "left-hop from column 1 lands in column 2, got \(back)")
 }
+
+@Test @MainActor func selectionStartingInsideCellKeepsDocumentOrder() {
+	// Ordering blocker (review): rects must come back in DOCUMENT order —
+	// firstSegmentRect takes .first as the anchor and the iOS bridge assigns
+	// containsStart/containsEnd from array ends. A selection STARTING inside
+	// a cell ("2う") must yield [partial(2), plain(う)], never plain-first.
+	let engine = editEngine("あ12う")
+	guard let cell = engine.tateChuYokoCell(for: NSRange(location: 1, length: 2)) else {
+		Issue.record("cell missing"); return
+	}
+	let rects = engine.selectionRects(for: NSRange(location: 2, length: 2)) // 2う
+	#expect(rects.count == 2, "partial + plain, got \(rects)")
+	guard rects.count == 2 else { return }
+	#expect(rects[0].width < cell.width - 0.5, "first rect is the PARTIAL cell slice")
+	#expect(rects[0].minY >= cell.minY - 1 && rects[0].maxY <= cell.maxY + 1,
+	        "first rect sits inside the cell")
+	#expect(rects[1].maxY <= cell.minY + 1, "second rect (う) follows BELOW the cell")
+}
+
+@Test @MainActor func threeTileSelectionOrdersPartialPlainPartial() {
+	// Multi-partial pin (review): tail of cell A + plain + head of cell B →
+	// exactly three rects, in document order, tiling without overlap. This is
+	// the fixture the deferred iPad grabber session re-runs with fingers.
+	let engine = editEngine("12あ34")
+	guard let cellA = engine.tateChuYokoCell(for: NSRange(location: 0, length: 2)),
+	      let cellB = engine.tateChuYokoCell(for: NSRange(location: 3, length: 2)) else {
+		Issue.record("cells missing"); return
+	}
+	let rects = engine.selectionRects(for: NSRange(location: 1, length: 3)) // 2あ3
+	#expect(rects.count == 3, "partial + plain + partial, got \(rects)")
+	guard rects.count == 3 else { return }
+	#expect(rects[0].width < cellA.width - 0.5
+	        && rects[0].minY >= cellA.minY - 1 && rects[0].maxY <= cellA.maxY + 1,
+	        "first rect = tail slice of cell A")
+	#expect(rects[1].maxY <= cellA.minY + 1 && rects[1].minY >= cellB.maxY - 1,
+	        "second rect = plain あ between the cells")
+	#expect(rects[2].width < cellB.width - 0.5
+	        && rects[2].minY >= cellB.minY - 1 && rects[2].maxY <= cellB.maxY + 1,
+	        "third rect = head slice of cell B")
+}

@@ -1060,10 +1060,13 @@ public class PorticoTextLayoutEngine {
 		return .zero
 	}
 
-	/// One fill rect per line that `range` intersects, in layout (Core Text,
-	/// bottom-left origin) coordinates. Unlike `rect(forCharacterRange:)`, which
-	/// returns only the first line, this spans a multi-line selection. Shared by the
-	/// on-screen selection highlight and iOS `UITextInput.selectionRects(for:)`.
+	/// Fill rects for `range` in layout (Core Text, bottom-left origin)
+	/// coordinates, IN DOCUMENT ORDER — usually one per line, but a 縦中横 cell
+	/// partially covered by the range contributes its own clipped rect, so one
+	/// line/column can yield several. Unlike `rect(forCharacterRange:)`, which
+	/// returns only the first line, this spans a multi-line selection. Shared by
+	/// the on-screen selection highlight and iOS `UITextInput.selectionRects(for:)`
+	/// (both of which rely on the ordering).
 	public func selectionRects(for range: NSRange) -> [CGRect] {
 		// 縦中横 partial-cell highlight (0.6.x slice — supersedes the slice-4
 		// P5 whole-cell expansion): a group PARTIALLY covered by `range` clips
@@ -1075,6 +1078,11 @@ public class PorticoTextLayoutEngine {
 		// the plain per-line math below yields that naturally, because the
 		// reservation offsets at group boundaries ARE the cell edges. The
 		// stored selection/marked RANGE is untouched either way.
+		// DOCUMENT ORDER is a postcondition (review blocker): consumers infer
+		// position from array order — `firstSegmentRect` takes .first as "the
+		// selection's first segment", and the iOS bridge assigns containsStart/
+		// containsEnd from array ends (grabber attachment). So the pieces are
+		// merge-walked in source order, never "all plain then all partial".
 		guard range.length > 0 else { return [] }
 		var partials: [(group: NSRange, covered: NSRange)] = []
 		var remainder = [range]
@@ -1084,17 +1092,26 @@ public class PorticoTextLayoutEngine {
 			partials.append((group, covered))
 			remainder = remainder.flatMap { PorticoTateChuYoko.subtract([group], from: $0) }
 		}
+		enum Piece { case plain(NSRange); case partial(group: NSRange, covered: NSRange) }
+		var pieces: [(location: Int, piece: Piece)] =
+			remainder.filter { $0.length > 0 }.map { ($0.location, .plain($0)) }
+			+ partials.map { ($0.covered.location, .partial(group: $0.group, covered: $0.covered)) }
+		pieces.sort { $0.location < $1.location }
+
 		var rects: [CGRect] = []
-		for fragment in remainder where fragment.length > 0 {
-			rects.append(contentsOf: plainSelectionRects(for: fragment))
-		}
-		for (group, covered) in partials {
-			if let rect = partialTateChuYokoCellRect(group: group, covered: covered) {
-				rects.append(rect)
-			} else {
-				// Unlaid cell (shouldn't happen for a rendered selection):
-				// fall back to the pre-slice whole-cell paint.
-				rects.append(contentsOf: plainSelectionRects(for: group))
+		for (_, piece) in pieces {
+			switch piece {
+			case .plain(let fragment):
+				// plainSelectionRects emits per-line rects in line (document) order.
+				rects.append(contentsOf: plainSelectionRects(for: fragment))
+			case .partial(let group, let covered):
+				if let rect = partialTateChuYokoCellRect(group: group, covered: covered) {
+					rects.append(rect)
+				} else {
+					// Unlaid cell (shouldn't happen for a rendered selection):
+					// fall back to the pre-slice whole-cell paint.
+					rects.append(contentsOf: plainSelectionRects(for: group))
+				}
 			}
 		}
 		return rects
@@ -1189,8 +1206,9 @@ public class PorticoTextLayoutEngine {
 	/// (horizontal) / first column (vertical RTL order), in layout coordinates — or `.null` if the
 	/// range is empty or unlaid. This is the popover-anchor policy (design §7.2): compact and
 	/// stable, unlike the union (arbitrary in vertical/wrapped) or the active end (drag-direction
-	/// dependent, undefined for word-select / right-click). `selectionRects` yields one rect per
-	/// line in document order, so its first element is exactly the first segment.
+	/// dependent, undefined for word-select / right-click). `selectionRects` yields rects in
+	/// document order (a stated postcondition), so its first element is exactly the first
+	/// segment — including a partial 縦中横 cell rect when the selection starts inside a cell.
 	private func firstSegmentRect(for range: NSRange) -> CGRect {
 		return selectionRects(for: range).first ?? .null
 	}
