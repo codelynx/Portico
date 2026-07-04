@@ -659,11 +659,25 @@ public class PorticoTextLayoutEngine {
 	/// rendering 縦中横: explicit overrides intersecting it are cleared, and
 	/// automatic groups still intersecting it after that are SUPPRESSED
 	/// (their full atomic ranges) — one undo step either way.
+	///
+	/// SNAP rule (witness fold, V3): apply operates at the same granularity
+	/// the selection HIGHLIGHT communicates — whole cells. A selection edge
+	/// falling inside an effective group highlights the whole cell (the v1
+	/// visual rule), so the range snaps OUTWARD to cover every intersected
+	/// group in full; otherwise a `月1` grabber stop that *paints* as `月10`
+	/// would combine `月1` and orphan the `0` (three per-spec rules composing
+	/// into a WYSIWYG break). The foreclosed sub-cell selection is one the UI
+	/// cannot even display, so no intent is lost.
 	public func performTateChuYokoToggle(for range: NSRange) {
 		guard range.length > 0, NSMaxRange(range) <= attributedString.length else { return }
 		switch tateChuYokoToggle(for: range) {
 		case .apply:
-			setTateChuYoko(.combine, for: range)
+			var snapped = range
+			for group in PorticoTateChuYoko.effectiveGroups(in: attributedString)
+			where NSIntersectionRange(group, range).length > 0 {
+				snapped = NSUnionRange(snapped, group)
+			}
+			setTateChuYoko(.combine, for: snapped)
 		case .release:
 			releaseTateChuYoko(in: range)
 		}

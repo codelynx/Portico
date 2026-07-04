@@ -316,3 +316,15 @@ private func cells(_ engine: PorticoTextLayoutEngine) -> CGFloat {
 	let copied = engine.serializedSelection()
 	#expect(copied == "あ[[tcy:123]]", "sliced override serializes its selected part, got \(copied ?? "nil")")
 }
+
+@Test @MainActor func applySnapsToIntersectedGroupBoundaries() {
+	// Witness fold (V3): a selection edge inside an effective group snaps
+	// OUTWARD on apply — the highlight shows whole cells, so the toggle
+	// operates on whole cells. 月1 selected over auto pair 10 → combine 月10,
+	// never a 月1 cell with an orphaned 0.
+	let engine = ovEngine("月10日")
+	engine.performTateChuYokoToggle(for: NSRange(location: 0, length: 2)) // 月1 — clips the pair
+	#expect(PorticoTateChuYoko.effectiveGroups(in: engine.attributedString)
+	        == [NSRange(location: 0, length: 3)], "snapped to 月10 as one cell")
+	#expect(engine.tateChuYokoOverride(at: 2) == .combine, "the 0 rode along")
+}
