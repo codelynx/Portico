@@ -28,6 +28,13 @@ From the **user's** side:
 
 - **Horizontal and vertical** Japanese layout (横書き / 縦書き), switchable at runtime.
 - **Ruby (furigana)** rendered above (horizontal) or right of (vertical) its base.
+- **縦中横 (tate-chū-yoko)** — automatic, no markup: two-digit numbers ("12") and
+  half-width `!?`-family pairs render **upright in one column cell** in vertical text,
+  with correct wrapping, selection, caret, and editing through the group. Pure layout
+  rule re-derived from the text; nothing is persisted.
+- **Outline / 縁取り (fuchi)** — whole-text rim behind the fill (manga lettering over
+  artwork); ruby and 縦中横 groups are outlined too, at the same absolute rim width.
+- **Line pitch control** — a uniform, ruby-reserving line pitch with a runtime multiplier.
 - Native **selection** (drag, double-click/tap word-select, handles), **caret**, and
   **arrow-key / Shift-arrow** navigation that follows the writing mode.
 - **IME** marked text and candidate placement on both platforms.
@@ -47,6 +54,13 @@ From the **integrator's** side:
   to drive your own `NSView`/`UIView`.
 - A plain-text **ruby notation** (`PorticoRuby`) for authoring and persistence.
 - Geometry + a **menu seam** to build your own editing UI without reimplementing layout.
+- A **headless rendering surface** for canvas/raster hosts: `drawText(in:)` (display-only,
+  no editing chrome), `measuredSize(inlineExtent:)` (verified-fit content measurement),
+  `inkBounds()` (glyph-ink extents incl. ruby overhang + outline) — the recipe is
+  [HeadlessRendering.md](Docs/HeadlessRendering.md).
+- **`typingAttributes`** (base attributes for empty documents) and **`focusesOnMount`**
+  (programmatic editor mounts claim first responder) — the in-place-overlay integration
+  surface driven by Portico's first production client.
 
 ## Requirements
 
@@ -318,19 +332,25 @@ handles/loupe in vertical). Full matrix and rationale: [Platform parity](Docs/Pl
 
 ## Status & limitations
 
-Layout, rendering, selection, IME, ruby (parse / serialize / edit), navigation, clipboard, and
-undo/redo are in place on both platforms. Consciously deferred:
+Layout, rendering, selection, IME, ruby (parse / serialize / edit), 縦中横, outline,
+headless measurement/rendering, navigation, clipboard, and undo/redo are in place on both
+platforms. Consciously deferred:
 
 - **Escaping** of literal `《` / `》` / `｜` in body text (they're treated as control characters).
 - **Mono-/jukugo-ruby** (per-character readings) — v1 is group-ruby.
 - **Public ruby styling knobs** (alignment / overhang / scale) — v1 uses sane fixed defaults.
 - iOS **vertical** native selection handles/loupe.
+- **Per-run 縦中横 override** (force-combine / rotate) — the automatic rule covers the
+  common manga cases; an explicit control is designed-for but not built.
 
 ## Documentation
 
 - [Ruby support](Docs/RubySupport.md) — notation, parsing, rendering, and the clipboard round-trip.
 - [Ruby editing design](Docs/RubyEditing-Design.md) — the editing model and the selection-menu seam.
 - [Platform parity](Docs/PlatformParity.md) — iOS ↔ macOS behavior and known limits.
+- [Manga-lettering extensions](Docs/MangaLettering-Extensions-Plan.md) — the headless/outline/
+  measurement surface, plan + as-built notes.
+- [Headless rendering](Docs/HeadlessRendering.md) — the raster-host recipe.
 - [Changelog](CHANGELOG.md).
 
 A runnable demo is in [`Example/`](Example/): horizontal ⇄ vertical toggle, ruby rendering, and
