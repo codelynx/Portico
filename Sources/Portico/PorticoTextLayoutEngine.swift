@@ -322,6 +322,14 @@ public class PorticoTextLayoutEngine {
 	/// kana boundaries), or nil if `index` isn't within a word (e.g. whitespace/punctuation).
 	/// Backs double-click word selection.
 	public func wordRange(at index: Int) -> NSRange? {
+		// 縦中横: a group IS the word for any probe inside it — the system
+		// tokenizer handles digit pairs but returns nothing useful for the
+		// bang pairs ("!?"), which are pinned v1 groups (review fold).
+		for group in currentTateChuYokoGroups() {
+			if index >= group.location, index < group.location + group.length {
+				return group
+			}
+		}
 		let ns = attributedString.string as NSString
 		guard ns.length > 0 else { return nil }
 		let probe = max(0, min(index, ns.length - 1))
@@ -415,8 +423,13 @@ public class PorticoTextLayoutEngine {
 			if orientation == .horizontal {
 				return max(0, from - 1)
 			} else {
+				// Probe by the COLUMN PITCH, not the caret rect's width — the
+				// 縦中横 interior caret is a 2pt vertical bar (local inline
+				// direction), and a width-based probe from it would land in
+				// the SAME column (slice-4 review catch). Pitch is the
+				// column-to-column distance by definition, shape-independent.
 				let rect = caretRect(for: from)
-				let point = CGPoint(x: rect.midX - rect.width, y: rect.midY)
+				let point = CGPoint(x: rect.midX - effectiveLinePitch, y: rect.midY)
 				return stringIndex(for: point)
 			}
 		case .right:
@@ -424,7 +437,7 @@ public class PorticoTextLayoutEngine {
 				return min(attributedString.length, from + 1)
 			} else {
 				let rect = caretRect(for: from)
-				let point = CGPoint(x: rect.midX + rect.width, y: rect.midY)
+				let point = CGPoint(x: rect.midX + effectiveLinePitch, y: rect.midY)
 				return stringIndex(for: point)
 			}
 		case .up:
@@ -651,9 +664,33 @@ public class PorticoTextLayoutEngine {
 		updateLayout()
 	}
 	
+	/// Grow `range` to cover any 縦中横 group it partially intersects.
+	private func expandedAcrossTateChuYokoGroups(_ range: NSRange) -> NSRange {
+		var expanded = range
+		for group in currentTateChuYokoGroups() {
+			guard NSIntersectionRange(group, expanded).length > 0 else { continue }
+			let start = min(expanded.location, group.location)
+			let end = max(expanded.location + expanded.length, group.location + group.length)
+			expanded = NSRange(location: start, length: end - start)
+		}
+		return expanded
+	}
+
 	public func stringIndex(for point: CGPoint) -> Int {
 		guard let hit = lineHit(for: point) else { return 0 }
-		return CTLineGetStringIndexForPosition(hit.line, hit.relativePoint)
+		let index = CTLineGetStringIndexForPosition(hit.line, hit.relativePoint)
+		// 縦中横 interior-tap rule (slice-4 P5 pin, DELIBERATE — not fallout):
+		// a tap resolving strictly INSIDE a group snaps to the nearer
+		// boundary by cell half — the pair edits as two characters, but a
+		// caret placed between them by a tap reads as a mis-tap, not intent.
+		// (Arrow keys remain index-based and can still park mid-group.)
+		for group in currentTateChuYokoGroups() {
+			guard index > group.location, index < group.location + group.length,
+			      let cell = tateChuYokoCell(for: group) else { continue }
+			// Vertical: leading half = the UPPER half of the cell.
+			return point.y >= cell.midY ? group.location : group.location + group.length
+		}
+		return index
 	}
 
 	/// Glyph *containing* `point` (containment semantics), for hit-testing. A tap on a glyph's
@@ -747,6 +784,38 @@ public class PorticoTextLayoutEngine {
 		var origins = [CGPoint](repeating: .zero, count: lines.count)
 		CTFrameGetLineOrigins(textFrame, CFRangeMake(0, 0), &origins)
 
+		// 縦中横 interior (slice-4 witness finding): inside a group the
+		// LOCAL inline direction is horizontal — the caret between the
+		// upright characters is a VERTICAL bar between them, not the
+		// column-shaped bar (which strikes through the pair). Position
+		// comes from the mini-line's own CT offset (matches the drawn
+		// glyphs exactly, including compression and asymmetric pairs);
+		// y-span is the mini-line's glyph height, so the caret reads as
+		// belonging to the text. Boundary carets (index at group start/end)
+		// deliberately fall through to the column shape.
+		for group in currentTateChuYokoGroups() {
+			guard index > group.location, index < group.location + group.length,
+			      let cell = tateChuYokoCell(for: group) else { continue }
+			let baseAttributes = attributedString.attributes(at: group.location, effectiveRange: nil)
+			let mini = PorticoTateChuYoko.miniLine(
+				groupText: (attributedString.string as NSString).substring(with: group),
+				baseAttributes: baseAttributes,
+				cellCross: cell.width,
+				stroke: nil)
+			let localOffset = CGFloat(CTLineGetOffsetForStringIndex(
+				mini.line, index - group.location, nil))
+			let drawX = cell.midX - mini.width / 2
+			let baseline = cell.midY - (mini.ascent - mini.descent) / 2
+			let pathBounds = CTLineGetBoundsWithOptions(mini.line, [.useGlyphPathBounds])
+			let ySpan: (y: CGFloat, height: CGFloat)
+			if !pathBounds.isNull, !pathBounds.isEmpty {
+				ySpan = (baseline + pathBounds.minY, pathBounds.height)
+			} else {
+				ySpan = (baseline - mini.descent, mini.ascent + mini.descent)
+			}
+			return CGRect(x: drawX + localOffset - 1, y: ySpan.y, width: 2, height: ySpan.height)
+		}
+
 		// Extra line fragment: the caret after a TRAILING hard break sits at
 		// the head of a line that has no CTLine yet — synthesize it from the
 		// last real line's origin advanced one pitch on the block axis
@@ -818,6 +887,12 @@ public class PorticoTextLayoutEngine {
 	/// returns only the first line, this spans a multi-line selection. Shared by the
 	/// on-screen selection highlight and iOS `UITextInput.selectionRects(for:)`.
 	public func selectionRects(for range: NSRange) -> [CGRect] {
+		// 縦中横 (slice-4 P5 pin): any range INTERSECTING a group shows the
+		// WHOLE cell — half-a-pair highlights are meaningless for an upright
+		// pair drawn as one unit. Visual expansion only; the stored
+		// selection/marked RANGE is untouched (editing granularity stays
+		// per-character).
+		let range = expandedAcrossTateChuYokoGroups(range)
 		guard let textFrame = textFrame, range.length > 0 else { return [] }
 		let lines = CTFrameGetLines(textFrame) as! [CTLine]
 		guard !lines.isEmpty else { return [] }
@@ -1013,6 +1088,18 @@ public class PorticoTextLayoutEngine {
 		}
 		strokeString.addAttribute(strokeColorKey, value: o.color, range: fullRange)
 
+		// 縦中横 plan-B (slice-4 PR-1 empirical pin: delegates do NOT suppress
+		// glyph drawing): group ranges must not paint phantom stroke outlines —
+		// zero the stroke width and clear the color for marker runs. The
+		// PR-2 post-pass strokes the mini-line itself (fuchi parity).
+		if !PorticoTateChuYoko.suppressionDisabledForTesting {
+			strokeString.enumerateAttribute(PorticoTateChuYoko.groupKey, in: fullRange) { value, range, _ in
+				guard value != nil else { return }
+				strokeString.addAttribute(strokeWidthKey, value: 0 as NSNumber, range: range)
+				strokeString.addAttribute(strokeColorKey, value: CGColor(gray: 0, alpha: 0), range: range)
+			}
+		}
+
 		// R1 (verified by the rubyIsOutlined gate): CTRubyAnnotation glyphs do NOT
 		// inherit the base run's stroke attributes — rebuild each annotation in the
 		// stroke pass carrying stroke attributes of its own, sized so the reading
@@ -1061,7 +1148,7 @@ public class PorticoTextLayoutEngine {
 	/// (platform font, CTFont, or absent/unrecognized — Core Text defaults to
 	/// Helvetica 12). Non-positive sizes fall back too, so percent conversion can
 	/// never divide by zero.
-	private static func pointSize(ofFontAttribute value: Any?) -> CGFloat {
+	static func pointSize(ofFontAttribute value: Any?) -> CGFloat {
 		let size: CGFloat
 		switch value {
 		case nil:
@@ -1120,6 +1207,11 @@ public class PorticoTextLayoutEngine {
 		if orientation == .vertical {
 			// .verticalGlyphForm allows Core Text to substitute vertical variants of characters if the font supports it.
 			mutableString.addAttribute(.verticalGlyphForm, value: true, range: fullRange)
+			// 縦中横 (slice 4): reserve one column cell per auto-detected group
+			// — on the LAYOUT COPY only (the backing store never carries the
+			// delegate/marker; typing inheritance and Aozora serialization
+			// stay clean by construction).
+			PorticoTateChuYoko.applyReservations(to: mutableString)
 		}
 		return mutableString
 	}
@@ -1348,8 +1440,19 @@ public class PorticoTextLayoutEngine {
 		var union = CGRect.null
 		for (line, origin) in zip(lines, origins) {
 			var local = CTLineGetBoundsWithOptions(line, [.useGlyphPathBounds])
+			// 縦中横 ink: hidden originals contribute ~NOTHING here — the
+			// suppression shrinks them to a sub-pixel font on the layout copy
+			// (their paths collapse), so whole-line bounds stay tight without
+			// any per-run recomputation. (History: a CTRunGetImageBounds
+			// exclusion was tried and reverted — rotated run-space trap; a
+			// quantified 4pt over-report pin was tried and FAILED at 36pt —
+			// path slack scales with font size. The sub-pixel shrink is the
+			// structural fix with no second coordinate space.) Tightness is
+			// pinned non-circularly at two sizes, plain + outlined. The
+			// mini-line union below supplies the group's real ink.
 			// Empty lines (e.g. "\n\n") yield null/empty glyph bounds — skip, or the
-			// union degrades.
+			// union degrades. (A group-ONLY line lands here too: its ink is
+			// exclusively the mini-line, unioned after this loop.)
 			guard !local.isNull, !local.isEmpty else { continue }
 
 			// LINE-EDGE ruby overhang: glyph-path line bounds include ruby
@@ -1390,6 +1493,37 @@ public class PorticoTextLayoutEngine {
 		if !union.isNull, let o = activeOutline {
 			union = union.insetBy(dx: -o.width, dy: -o.width)
 		}
+		// 縦中横 (slice-4 PR-2): union each group's mini-line ink at its cell —
+		// keyed off the group derivation, NOT line bounds (a group-only column
+		// is a line whose visible content is only the mini-line; the original
+		// glyph paths are suppressed ink that may or may not register). The
+		// outline outset mirrors the base-run treatment.
+		let tcyOutset = activeOutline?.width ?? 0
+		let ns = attributedString.string as NSString
+		for group in currentTateChuYokoGroups() {
+			guard let cell = tateChuYokoCell(for: group) else { continue }
+			let baseAttributes = attributedString.attributes(at: group.location, effectiveRange: nil)
+			let mini = PorticoTateChuYoko.miniLine(
+				groupText: ns.substring(with: group),
+				baseAttributes: baseAttributes,
+				cellCross: cell.width,
+				stroke: nil)
+			// GLYPH-PATH bounds (baseline-relative), not typographic — the
+			// rest of the union is path-tight and the tightness pin holds
+			// ink to painted pixels.
+			let pathBounds = CTLineGetBoundsWithOptions(mini.line, [.useGlyphPathBounds])
+			guard !pathBounds.isNull, !pathBounds.isEmpty else { continue }
+			let drawX = cell.midX - mini.width / 2
+			let baseline = cell.midY - (mini.ascent - mini.descent) / 2
+			let inkRect = CGRect(
+				x: drawX + pathBounds.minX,
+				y: baseline + pathBounds.minY,
+				width: pathBounds.width,
+				height: pathBounds.height
+			).insetBy(dx: -tcyOutset, dy: -tcyOutset)
+			union = union.union(inkRect)
+		}
+
 		return union
 	}
 	
@@ -1414,9 +1548,85 @@ public class PorticoTextLayoutEngine {
 			context.setLineJoin(.round)
 			context.setLineCap(.round)
 			CTFrameDraw(strokeFrame, context)
+			// 縦中横 stroke pass rides with the base stroke frame (all strokes
+			// behind all fills — layering parity with the base text).
+			drawTateChuYoko(in: context, stroke: activeOutline)
 			context.restoreGState()
 		}
 		CTFrameDraw(textFrame, context)
+		drawTateChuYoko(in: context, stroke: nil)
+	}
+
+	/// 縦中横 groups in the CURRENT text (ruby ranges excluded) — the same
+	/// pure derivation the reservation uses; shared by draw + inkBounds.
+	private func currentTateChuYokoGroups() -> [NSRange] {
+		guard orientation == .vertical else { return [] }
+		return PorticoTateChuYoko.groups(
+			in: attributedString.string,
+			excluding: PorticoTateChuYoko.genuineRubyRanges(in: attributedString))
+	}
+
+	/// The 縦中横 cell in engine (bottom-left) coordinates, derived WITHIN
+	/// the group's own line (same offset/origin formulas as `caretRect`).
+	/// PR-3 finding: the earlier two-caret derivation misread a column
+	/// break landing right AFTER a group as a split — `caretRect(for:
+	/// groupEnd)` resolves to the NEXT line's head at that boundary, and
+	/// the mini-line silently skipped (the forbidden blank-cell class).
+	/// Both offsets computed against the line CONTAINING the group are
+	/// boundary-safe. Nil only for a TRUE split (the group's characters on
+	/// different lines) or no layout.
+	func tateChuYokoCell(for group: NSRange) -> CGRect? {
+		guard orientation == .vertical, let textFrame = textFrame else { return nil }
+		let lines = CTFrameGetLines(textFrame) as! [CTLine]
+		guard !lines.isEmpty else { return nil }
+		var origins = [CGPoint](repeating: .zero, count: lines.count)
+		CTFrameGetLineOrigins(textFrame, CFRangeMake(0, 0), &origins)
+
+		for (line, origin) in zip(lines, origins) {
+			let range = CTLineGetStringRange(line)
+			guard group.location >= range.location,
+			      group.location < range.location + range.length else { continue }
+			guard group.location + group.length <= range.location + range.length else {
+				return nil // TRUE split: the pair's characters are on different lines
+			}
+			var ascent: CGFloat = 0
+			var descent: CGFloat = 0
+			var leading: CGFloat = 0
+			CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
+			let startOffset = CTLineGetOffsetForStringIndex(line, group.location, nil)
+			let endOffset = CTLineGetOffsetForStringIndex(line, group.location + group.length, nil)
+			let top = origin.y - startOffset
+			let bottom = origin.y - endOffset
+			guard top > bottom else { return nil }
+			return CGRect(x: origin.x - descent, y: bottom, width: ascent + descent, height: top - bottom)
+		}
+		return nil
+	}
+
+	/// Draw each group's upright mini-line centered in its cell. `stroke`
+	/// non-nil = the stroke pass (called under the round-join state).
+	private func drawTateChuYoko(in context: CGContext, stroke: PorticoTextOutline?) {
+		let groups = currentTateChuYokoGroups()
+		guard !groups.isEmpty else { return }
+		let ns = attributedString.string as NSString
+		for group in groups {
+			guard let cell = tateChuYokoCell(for: group) else { continue }
+			let baseAttributes = attributedString.length > group.location
+				? attributedString.attributes(at: group.location, effectiveRange: nil)
+				: typingAttributes
+			let mini = PorticoTateChuYoko.miniLine(
+				groupText: ns.substring(with: group),
+				baseAttributes: baseAttributes,
+				cellCross: cell.width,
+				stroke: stroke)
+			context.saveGState()
+			context.textMatrix = .identity
+			let x = cell.midX - mini.width / 2
+			let baseline = cell.midY - (mini.ascent - mini.descent) / 2
+			context.textPosition = CGPoint(x: x, y: baseline)
+			CTLineDraw(mini.line, context)
+			context.restoreGState()
+		}
 	}
 
 	/// The caret, when the engine owns it (see `drawsCaret`). Drawn over the text.
