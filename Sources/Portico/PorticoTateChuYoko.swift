@@ -136,6 +136,66 @@ enum PorticoTateChuYoko {
 		}
 	}
 
+	// MARK: - Mini-line (the upright pair, PR-2)
+
+	/// The horizontal CTLine that paints a group upright in its cell.
+	/// Built from the BACKING attributes at the group (ink color, font —
+	/// marked-text underline rides along for live feedback), with layout-only
+	/// keys stripped. `stroke` non-nil builds the STROKE variant (fuchi
+	/// parity: stroke-only percent, mirroring the base stroke frame).
+	/// OQ-B compression: when the pair's natural advance exceeds the cell's
+	/// cross extent, the FONT is compressed via a horizontal matrix — glyph
+	/// outlines narrow but the stroke width stays absolute (the rim keeps
+	/// its artist-facing thickness), and reservation metrics are untouched.
+	static func miniLine(
+		groupText: String,
+		baseAttributes: [NSAttributedString.Key: Any],
+		cellCross: CGFloat,
+		stroke: PorticoTextOutline?
+	) -> (line: CTLine, width: CGFloat, ascent: CGFloat, descent: CGFloat) {
+		var attributes = baseAttributes
+		attributes.removeValue(forKey: .paragraphStyle)
+		attributes.removeValue(forKey: .verticalGlyphForm)
+		attributes.removeValue(forKey: PorticoRuby.rubyKey)
+		attributes.removeValue(forKey: groupKey)
+		attributes.removeValue(forKey: NSAttributedString.Key(kCTRunDelegateAttributeName as String))
+
+		func build(_ attrs: [NSAttributedString.Key: Any]) -> (CTLine, CGFloat, CGFloat, CGFloat) {
+			let line = CTLineCreateWithAttributedString(
+				NSAttributedString(string: groupText, attributes: attrs))
+			var ascent: CGFloat = 0
+			var descent: CGFloat = 0
+			var leading: CGFloat = 0
+			let width = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
+			return (line, width, ascent, descent)
+		}
+
+		if let stroke {
+			let fontSize = PorticoTextLayoutEngine.pointSize(ofFontAttribute: attributes[.font])
+			let percent = (2 * stroke.width) / fontSize * 100
+			attributes[NSAttributedString.Key(kCTStrokeWidthAttributeName as String)] = percent as NSNumber
+			attributes[NSAttributedString.Key(kCTStrokeColorAttributeName as String)] = stroke.color
+		}
+
+		var (line, width, ascent, descent) = build(attributes)
+		if width > cellCross, width > 0 {
+			// Compress the FONT, not the context — stroking compressed glyph
+			// outlines keeps the rim's absolute width.
+			let scale = cellCross / width
+			var matrix = CGAffineTransform(scaleX: scale, y: 1)
+			let baseSize = PorticoTextLayoutEngine.pointSize(ofFontAttribute: attributes[.font])
+			let baseName: String
+			if let value = attributes[.font], CFGetTypeID(value as CFTypeRef) == CTFontGetTypeID() {
+				baseName = CTFontCopyPostScriptName(value as! CTFont) as String
+			} else {
+				baseName = "Helvetica"
+			}
+			attributes[.font] = CTFontCreateWithName(baseName as CFString, baseSize, &matrix)
+			(line, width, ascent, descent) = build(attributes)
+		}
+		return (line, width, ascent, descent)
+	}
+
 	private static func makeDelegate(_ metrics: CellMetrics) -> CTRunDelegate {
 		var callbacks = CTRunDelegateCallbacks(
 			version: kCTRunDelegateCurrentVersion,

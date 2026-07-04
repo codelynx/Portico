@@ -1405,6 +1405,30 @@ public class PorticoTextLayoutEngine {
 		if !union.isNull, let o = activeOutline {
 			union = union.insetBy(dx: -o.width, dy: -o.width)
 		}
+		// 縦中横 (slice-4 PR-2): union each group's mini-line ink at its cell —
+		// keyed off the group derivation, NOT line bounds (a group-only column
+		// is a line whose visible content is only the mini-line; the original
+		// glyph paths are suppressed ink that may or may not register). The
+		// outline outset mirrors the base-run treatment.
+		let tcyOutset = activeOutline?.width ?? 0
+		let ns = attributedString.string as NSString
+		for group in currentTateChuYokoGroups() {
+			guard let cell = tateChuYokoCell(for: group) else { continue }
+			let baseAttributes = attributedString.attributes(at: group.location, effectiveRange: nil)
+			let mini = PorticoTateChuYoko.miniLine(
+				groupText: ns.substring(with: group),
+				baseAttributes: baseAttributes,
+				cellCross: cell.width,
+				stroke: nil)
+			let inkRect = CGRect(
+				x: cell.midX - mini.width / 2,
+				y: cell.midY - (mini.ascent - mini.descent) / 2 - mini.descent,
+				width: mini.width,
+				height: mini.ascent + mini.descent
+			).insetBy(dx: -tcyOutset, dy: -tcyOutset)
+			union = union.union(inkRect)
+		}
+
 		return union
 	}
 	
@@ -1429,9 +1453,67 @@ public class PorticoTextLayoutEngine {
 			context.setLineJoin(.round)
 			context.setLineCap(.round)
 			CTFrameDraw(strokeFrame, context)
+			// 縦中横 stroke pass rides with the base stroke frame (all strokes
+			// behind all fills — layering parity with the base text).
+			drawTateChuYoko(in: context, stroke: activeOutline)
 			context.restoreGState()
 		}
 		CTFrameDraw(textFrame, context)
+		drawTateChuYoko(in: context, stroke: nil)
+	}
+
+	/// 縦中横 groups in the CURRENT text (ruby ranges excluded) — the same
+	/// pure derivation the reservation uses; shared by draw + inkBounds.
+	private func currentTateChuYokoGroups() -> [NSRange] {
+		guard orientation == .vertical else { return [] }
+		var rubyRanges: [NSRange] = []
+		let full = NSRange(location: 0, length: attributedString.length)
+		attributedString.enumerateAttribute(PorticoRuby.rubyKey, in: full) { value, range, _ in
+			if value != nil { rubyRanges.append(range) }
+		}
+		return PorticoTateChuYoko.groups(in: attributedString.string, excluding: rubyRanges)
+	}
+
+	/// The 縦中横 cell in engine (bottom-left) coordinates, derived from the
+	/// PROVEN caret geometry (PR-1 pins) rather than re-deriving run
+	/// positions. Nil when the group split across columns (wrap boundary —
+	/// PR-3 territory) or has no layout.
+	private func tateChuYokoCell(for group: NSRange) -> CGRect? {
+		let startRect = caretRect(for: group.location)
+		let endRect = caretRect(for: group.location + group.length)
+		guard startRect != .zero, endRect != .zero,
+		      abs(startRect.minX - endRect.minX) < 0.5 // same column
+		else { return nil }
+		let top = startRect.maxY
+		let bottom = endRect.maxY
+		guard top > bottom else { return nil }
+		return CGRect(x: startRect.minX, y: bottom, width: startRect.width, height: top - bottom)
+	}
+
+	/// Draw each group's upright mini-line centered in its cell. `stroke`
+	/// non-nil = the stroke pass (called under the round-join state).
+	private func drawTateChuYoko(in context: CGContext, stroke: PorticoTextOutline?) {
+		let groups = currentTateChuYokoGroups()
+		guard !groups.isEmpty else { return }
+		let ns = attributedString.string as NSString
+		for group in groups {
+			guard let cell = tateChuYokoCell(for: group) else { continue }
+			let baseAttributes = attributedString.length > group.location
+				? attributedString.attributes(at: group.location, effectiveRange: nil)
+				: typingAttributes
+			let mini = PorticoTateChuYoko.miniLine(
+				groupText: ns.substring(with: group),
+				baseAttributes: baseAttributes,
+				cellCross: cell.width,
+				stroke: stroke)
+			context.saveGState()
+			context.textMatrix = .identity
+			let x = cell.midX - mini.width / 2
+			let baseline = cell.midY - (mini.ascent - mini.descent) / 2
+			context.textPosition = CGPoint(x: x, y: baseline)
+			CTLineDraw(mini.line, context)
+			context.restoreGState()
+		}
 	}
 
 	/// The caret, when the engine owns it (see `drawsCaret`). Drawn over the text.

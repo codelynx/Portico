@@ -112,28 +112,36 @@ private func inkPixelCount(_ engine: PorticoTextLayoutEngine) -> Int {
 	return inked
 }
 
-@Test @MainActor func delegateRunsDrawNoGlyphs() {
-	// THE suppression pin. Day-one RESULT: the inherent-suppression
-	// hypothesis FAILED (CT still draws the original glyphs under a run
-	// delegate — attachments look suppressed only because U+FFFC's glyph is
-	// blank). The named plan-B is ACTIVE (clear foreground on group ranges,
-	// layout copy only) and this gate now pins IT: a group-only engine
-	// paints nothing until PR-2's mini-line post-pass draws the upright pair.
-	let group = tcyEngine("12")
-	#expect(inkPixelCount(group) == 0, "suppressed group must draw zero pixels")
-
-	// Harness sanity: the same pipeline DOES paint real glyphs.
-	let kana = tcyEngine("あ")
-	#expect(inkPixelCount(kana) > 0, "control: kana paints")
+@Test @MainActor func originalGlyphsSuppressedUnderMiniLine() {
+	// THE suppression pin, end-state form. Day-one RESULT: the inherent-
+	// suppression hypothesis FAILED (CT still draws original glyphs under a
+	// run delegate — attachments only look suppressed because U+FFFC's glyph
+	// is blank); the named plan-B is ACTIVE (clear fill on group ranges,
+	// zero stroke on the stroke frame — layout copies only). With PR-2's
+	// mini-line painting, suppression is pinned by ink QUANTITY: the
+	// vertical group's ink ≈ the same pair drawn horizontally (the upright
+	// mini-line alone) — rotated originals underneath would add ink.
+	let vertical = inkPixelCount(tcyEngine("12"))
+	let horizontal = inkPixelCount(tcyEngine("12", .horizontal))
+	#expect(vertical > 0, "the mini-line paints")
+	#expect(abs(vertical - horizontal) < horizontal / 2,
+	        "vertical (\(vertical) px) ≈ upright pair alone (\(horizontal) px) — no doubled originals")
 }
 
 @Test @MainActor func strokeFrameSuppressedToo() {
-	// Outlined group-only content must ALSO paint nothing — the stroke frame
-	// zeroes stroke width + clears color on marker runs (plan-B's stroke
-	// half; without it the phantom outlines paint).
-	let engine = tcyEngine("12")
-	engine.outline = PorticoTextOutline(width: 2, color: CGColor(gray: 0, alpha: 1))
-	#expect(inkPixelCount(engine) == 0, "no phantom stroke outlines for delegate runs")
+	// Outlined group: the stroke frame zeroes stroke width + clears color on
+	// marker runs (plan-B's stroke half) — so outlined ink ≈ the outlined
+	// upright pair alone, no phantom rotated outlines underneath.
+	func outlined(_ orientation: PorticoLayoutOrientation) -> Int {
+		let engine = tcyEngine("12", orientation)
+		engine.outline = PorticoTextOutline(width: 2, color: CGColor(gray: 0, alpha: 1))
+		return inkPixelCount(engine)
+	}
+	let vertical = outlined(.vertical)
+	let horizontal = outlined(.horizontal)
+	#expect(vertical > 0)
+	#expect(abs(vertical - horizontal) < horizontal / 2,
+	        "outlined vertical (\(vertical) px) ≈ outlined pair alone (\(horizontal) px)")
 }
 
 // MARK: - (3) String-index geometry (first-order risk)
@@ -223,4 +231,108 @@ private func inkPixelCount(_ engine: PorticoTextLayoutEngine) -> Int {
 		orientation: .vertical, bounds: .zero).measuredSize()
 	#expect(abs(ruby.height - plain.height) > 2,
 	        "ruby'd digits (\(ruby)) must not measure like a grouped cell (\(plain))")
+}
+
+// MARK: - PR-2: draw + ink
+
+@MainActor
+private func inkedBBox(_ engine: PorticoTextLayoutEngine, band: ClosedRange<CGFloat>? = nil) -> CGRect {
+	// Bounding box of inked pixels (optionally restricted to a vertical band
+	// in TOP-DOWN pixel coords), in the bitmap's pixel space.
+	let size = engine.bounds
+	let width = max(Int(size.width.rounded(.up)), 1)
+	let height = max(Int(size.height.rounded(.up)), 1)
+	let context = CGContext(
+		data: nil, width: width, height: height, bitsPerComponent: 8,
+		bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+		bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+	engine.drawText(in: context)
+	guard let data = context.data else { return .null }
+	let buffer = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
+	var minX = Int.max, maxX = -1, minY = Int.max, maxY = -1
+	for y in 0..<height {
+		let topDownY = CGFloat(height - 1 - y) // CG bitmap row 0 = bottom
+		if let band, !band.contains(topDownY) { continue }
+		for x in 0..<width where buffer[(y * width + x) * 4 + 3] > 0 {
+			minX = min(minX, x); maxX = max(maxX, x)
+			minY = min(minY, y); maxY = max(maxY, y)
+		}
+	}
+	guard maxX >= 0 else { return .null }
+	return CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
+}
+
+@Test @MainActor func groupPaintsUprightInsideCell() {
+	// The pair paints WIDE (side-by-side upright digits), not tall (rotated
+	// or stacked) — the orientation proof, plus cell containment.
+	let engine = tcyEngine("12")
+	let bbox = inkedBBox(engine)
+	#expect(!bbox.isNull, "the mini-line paints (PR-1 left the cell empty)")
+	#expect(bbox.width > bbox.height,
+	        "upright pair is wider than tall, got \(bbox)")
+	#expect(bbox.width <= engine.bounds.width + 1, "compressed to fit the column width")
+}
+
+@Test @MainActor func groupInkContainedInInkBounds() {
+	// Group-only content: inkBounds non-null and CONTAINS every inked pixel
+	// (the group-only-line trap, closed).
+	let engine = tcyEngine("12")
+	let ink = engine.inkBounds()
+	#expect(!ink.isNull, "group-only content has non-null inkBounds")
+	let bbox = inkedBBox(engine) // pixel space, top-down
+	// inkBounds is bottom-left engine space; flip to compare.
+	let flipped = CGRect(
+		x: ink.minX, y: engine.bounds.height - ink.maxY,
+		width: ink.width, height: ink.height)
+	#expect(flipped.insetBy(dx: -1.5, dy: -1.5).contains(bbox),
+	        "all inked pixels (\(bbox)) inside inkBounds (\(flipped))")
+}
+
+@Test @MainActor func groupInContextPaintsAtItsCell() {
+	// "あ12う": the group's ink sits in the SECOND cell band (between the
+	// kana), not at the column ends.
+	let engine = tcyEngine("あ12う")
+	let cellBand: ClosedRange<CGFloat> = 14...28 // second cell, top-down pt
+	let bbox = inkedBBox(engine, band: cellBand)
+	#expect(!bbox.isNull, "group ink present in its cell band")
+	#expect(bbox.width > bbox.height, "and upright (wide), got \(bbox)")
+}
+
+@Test @MainActor func fuchiOutlinesTheGroup() {
+	// White fill + black rim: both colors present in the cell = the stroke
+	// pass reaches the mini-line (incl. the compressed default case — two
+	// half-width digits naturally exceed one em, so compression is ACTIVE).
+	let engine = PorticoTextLayoutEngine(
+		attributedString: NSAttributedString(string: "12", attributes: [
+			.font: tcyFont, .foregroundColor: CGColor(gray: 1, alpha: 1),
+		]),
+		orientation: .vertical, bounds: .zero)
+	engine.outline = PorticoTextOutline(width: 2, color: CGColor(gray: 0, alpha: 1))
+	engine.update(bounds: engine.measuredSize())
+
+	let size = engine.bounds
+	let width = max(Int(size.width.rounded(.up)), 1)
+	let height = max(Int(size.height.rounded(.up)), 1)
+	let context = CGContext(
+		data: nil, width: width, height: height, bitsPerComponent: 8,
+		bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+		bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+	engine.drawText(in: context)
+	let buffer = context.data!.bindMemory(to: UInt8.self, capacity: width * height * 4)
+	var darkInk = 0, lightInk = 0
+	for pixel in 0..<(width * height) where buffer[pixel * 4 + 3] > 200 {
+		if buffer[pixel * 4] < 60 { darkInk += 1 }
+		if buffer[pixel * 4] > 200 { lightInk += 1 }
+	}
+	#expect(darkInk > 0, "black rim present around the group")
+	#expect(lightInk > 0, "white fill present inside the rim")
+}
+
+@Test @MainActor func inkBoundsIncludesOutlineOutset() {
+	let plain = tcyEngine("12").inkBounds()
+	let outlined = tcyEngine("12")
+	outlined.outline = PorticoTextOutline(width: 2, color: CGColor(gray: 0, alpha: 1))
+	let ink = outlined.inkBounds()
+	#expect(ink.width >= plain.width + 3 && ink.height >= plain.height + 3,
+	        "outline outsets the group ink (\(plain) → \(ink))")
 }
