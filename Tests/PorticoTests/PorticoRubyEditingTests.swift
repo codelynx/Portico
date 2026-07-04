@@ -588,3 +588,26 @@ private func type(_ s: String, into e: PorticoTextLayoutEngine) { for ch in s { 
 	let m = PorticoRuby.inlineRubyMatch(in: "｜漢字《まとめ》" as NSString, closingAt: 7, isRuby: { $0 == 2 })
 	#expect(m?.baseRange == NSRange(location: 1, length: 2)) // 漢字
 }
+
+@Test func unmarkCommitAlsoConverts() {
+	// Witness fold (V7): Kotoeri can finalize a composition via unmarkText
+	// (click-confirm / some Enter flows) instead of a committing insertText —
+	// unmark IS a commit, so the inline conversion must fire there too.
+	let e = emptyEngine() // opts into typing conversion
+	e.insertText("猫")
+	e.setMarkedText("《ねこ》", selectedRange: NSRange(location: 4, length: 0), replacementRange: nil)
+	e.unmarkText() // finalize WITHOUT a committing insertText
+	#expect(e.attributedString.string == "猫")
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "ねこ")
+	e.undoManager.undo() // conversion is its own step → back to the literal
+	#expect(e.attributedString.string == "猫《ねこ》")
+}
+
+@Test func unmarkCommitStaysLiteralByDefault() {
+	let e = PorticoTextLayoutEngine(attributedString: NSAttributedString(string: "猫"),
+	                                orientation: .horizontal, bounds: CGSize(width: 400, height: 400))
+	e.cursorIndex = 1
+	e.setMarkedText("《ねこ》", selectedRange: NSRange(location: 4, length: 0), replacementRange: nil)
+	e.unmarkText()
+	#expect(e.attributedString.string == "猫《ねこ》") // default: no conversion on unmark either
+}

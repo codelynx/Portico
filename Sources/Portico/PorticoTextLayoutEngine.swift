@@ -421,6 +421,13 @@ public class PorticoTextLayoutEngine {
 		}
 		textDidChange?(self.attributedString)
 		updateLayout()
+
+		// Commit-path parity (witness fold, V7): unmark IS a commit, so the
+		// inline conversion must fire here exactly as in insertText — Kotoeri
+		// can finalize a composition through unmark (click-confirm and some
+		// Enter flows), and without this the just-committed `》` never
+		// converts. Same undo shape: the conversion is its own step.
+		if importsAozoraRubyWhileTyping { applyInlineRubyConversion() }
 	}
 	
 	public enum MoveDirection {
