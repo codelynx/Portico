@@ -193,21 +193,64 @@ private func relayout(_ engine: PorticoTextLayoutEngine) {
 
 // MARK: - Selection semantics
 
-@Test @MainActor func selectionIntersectingGroupShowsWholeCell() {
+@Test @MainActor func partialSelectionClipsCellInLocalInlineDirection() {
+	// 0.6.x partial-highlight slice — SUPERSEDES the slice-4 P5 whole-cell
+	// pin (selectionIntersectingGroupShowsWholeCell): half-a-pair highlights
+	// were "meaningless" only while nothing could draw them; the mini-line
+	// glyph offsets (built for interior carets/gap taps) can. A partially
+	// covered group now clips its cell rect in the cell's LOCAL inline
+	// direction (horizontal), full cell height — so the highlight edge moves
+	// through the cell exactly as the stored per-character selection does.
 	let engine = editEngine("あ12う")
 	guard let cell = engine.tateChuYokoCell(for: NSRange(location: 1, length: 2)) else {
 		Issue.record("cell missing"); return
 	}
-	// Half-a-pair selection: the visual rect spans the WHOLE cell.
-	let rects = engine.selectionRects(for: NSRange(location: 1, length: 1))
+	let left = engine.selectionRects(for: NSRange(location: 1, length: 1))  // the "1"
+	let right = engine.selectionRects(for: NSRange(location: 2, length: 1)) // the "2"
+	#expect(left.count == 1 && right.count == 1)
+	guard let l = left.first, let r = right.first else { return }
+	// Full cell height, partial width — each digit's rect is a strict sub-cell.
+	#expect(abs(l.height - cell.height) <= 1 && abs(r.height - cell.height) <= 1,
+	        "partial rects keep the full cell height")
+	#expect(l.width < cell.width - 0.5 && r.width < cell.width - 0.5,
+	        "partial rects are narrower than the cell (l \(l), r \(r), cell \(cell))")
+	// The two halves TILE: left ends where right begins, and together they
+	// span the drawn mini-line (within the cell).
+	#expect(abs(l.maxX - r.minX) <= 0.5, "halves share the interior gap edge")
+	#expect(l.minX >= cell.minX - 0.5 && r.maxX <= cell.maxX + 0.5,
+	        "both stay inside the cell")
+	// The stored range is untouched (editing granularity stays per-character).
+	engine.setSelectedRange(NSRange(location: 1, length: 1))
+	#expect(engine.selectionRange == NSRange(location: 1, length: 1))
+}
+
+@Test @MainActor func fullySelectedGroupStillPaintsWholeCell() {
+	let engine = editEngine("あ12う")
+	guard let cell = engine.tateChuYokoCell(for: NSRange(location: 1, length: 2)) else {
+		Issue.record("cell missing"); return
+	}
+	let rects = engine.selectionRects(for: NSRange(location: 1, length: 2))
 	#expect(rects.count == 1)
 	if let rect = rects.first {
 		#expect(abs(rect.height - cell.height) <= 1,
-		        "half-group selection (\(rect)) shows the whole cell (\(cell))")
+		        "full-group selection (\(rect)) spans the whole cell (\(cell))")
 	}
-	// The stored range is NOT mutated by the visual expansion.
-	engine.setSelectedRange(NSRange(location: 1, length: 1))
-	#expect(engine.selectionRange == NSRange(location: 1, length: 1))
+}
+
+@Test @MainActor func selectionCrossingCellBoundaryTilesPlainPlusPartial() {
+	// あ1 — a plain char plus half the cell: one plain rect (あ, column-shaped)
+	// and one partial-cell rect (the 1), NOT a single merged whole-cell rect.
+	let engine = editEngine("あ12う")
+	guard let cell = engine.tateChuYokoCell(for: NSRange(location: 1, length: 2)) else {
+		Issue.record("cell missing"); return
+	}
+	let rects = engine.selectionRects(for: NSRange(location: 0, length: 2))
+	#expect(rects.count == 2, "plain fragment + partial cell, got \(rects)")
+	// The group's contribution is narrower than the cell — the visible edge
+	// sits INSIDE the cell (the per-digit movement itself is pinned by the
+	// tiling assertions in partialSelectionClipsCellInLocalInlineDirection).
+	let partial = rects.min { $0.width < $1.width }
+	if let partial { #expect(partial.width < cell.width - 0.5) }
 }
 
 @Test @MainActor func interiorTapResolvesByMiniLineGap() {

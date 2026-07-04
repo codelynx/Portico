@@ -844,18 +844,6 @@ public class PorticoTextLayoutEngine {
 		updateLayout()
 	}
 	
-	/// Grow `range` to cover any 縦中横 group it partially intersects.
-	private func expandedAcrossTateChuYokoGroups(_ range: NSRange) -> NSRange {
-		var expanded = range
-		for group in currentTateChuYokoGroups() {
-			guard NSIntersectionRange(group, expanded).length > 0 else { continue }
-			let start = min(expanded.location, group.location)
-			let end = max(expanded.location + expanded.length, group.location + group.length)
-			expanded = NSRange(location: start, length: end - start)
-		}
-		return expanded
-	}
-
 	public func stringIndex(for point: CGPoint) -> Int {
 		guard let hit = lineHit(for: point) else { return 0 }
 		let index = CTLineGetStringIndexForPosition(hit.line, hit.relativePoint)
@@ -1077,12 +1065,45 @@ public class PorticoTextLayoutEngine {
 	/// returns only the first line, this spans a multi-line selection. Shared by the
 	/// on-screen selection highlight and iOS `UITextInput.selectionRects(for:)`.
 	public func selectionRects(for range: NSRange) -> [CGRect] {
-		// 縦中横 (slice-4 P5 pin): any range INTERSECTING a group shows the
-		// WHOLE cell — half-a-pair highlights are meaningless for an upright
-		// pair drawn as one unit. Visual expansion only; the stored
-		// selection/marked RANGE is untouched (editing granularity stays
-		// per-character).
-		let range = expandedAcrossTateChuYokoGroups(range)
+		// 縦中横 partial-cell highlight (0.6.x slice — supersedes the slice-4
+		// P5 whole-cell expansion): a group PARTIALLY covered by `range` clips
+		// its cell rect in the cell's LOCAL inline direction via the
+		// mini-line's own glyph offsets — the highlight edge moves through the
+		// cell exactly as the stored per-character selection does (Shift+
+		// arrows, grabber drags), instead of painting the whole cell for any
+		// intersection. A FULLY covered group still paints as the whole cell —
+		// the plain per-line math below yields that naturally, because the
+		// reservation offsets at group boundaries ARE the cell edges. The
+		// stored selection/marked RANGE is untouched either way.
+		guard range.length > 0 else { return [] }
+		var partials: [(group: NSRange, covered: NSRange)] = []
+		var remainder = [range]
+		for group in currentTateChuYokoGroups() {
+			let covered = NSIntersectionRange(group, range)
+			guard covered.length > 0, covered != group else { continue }
+			partials.append((group, covered))
+			remainder = remainder.flatMap { PorticoTateChuYoko.subtract([group], from: $0) }
+		}
+		var rects: [CGRect] = []
+		for fragment in remainder where fragment.length > 0 {
+			rects.append(contentsOf: plainSelectionRects(for: fragment))
+		}
+		for (group, covered) in partials {
+			if let rect = partialTateChuYokoCellRect(group: group, covered: covered) {
+				rects.append(rect)
+			} else {
+				// Unlaid cell (shouldn't happen for a rendered selection):
+				// fall back to the pre-slice whole-cell paint.
+				rects.append(contentsOf: plainSelectionRects(for: group))
+			}
+		}
+		return rects
+	}
+
+	/// The pre-partial per-line rect math: one rect per line the range touches,
+	/// from the layout line's own offsets (which, across a whole 縦中横 group,
+	/// are the reservation's cell edges).
+	private func plainSelectionRects(for range: NSRange) -> [CGRect] {
 		guard let textFrame = textFrame, range.length > 0 else { return [] }
 		let lines = CTFrameGetLines(textFrame) as! [CTLine]
 		guard !lines.isEmpty else { return [] }
@@ -1115,6 +1136,32 @@ public class PorticoTextLayoutEngine {
 			}
 		}
 		return rects
+	}
+
+	/// The highlight rect for the `covered` sub-range of a PARTIALLY selected
+	/// 縦中横 group: the cell rect clipped in the cell's local inline direction
+	/// (the glyphs run horizontally inside the cell), with edges from the
+	/// MINI-LINE's own glyph offsets — the same geometry the interior caret and
+	/// gap taps use, so the highlight edge lands exactly between the drawn
+	/// glyphs (including compression and asymmetric pairs). Full cell height:
+	/// the upright glyphs occupy the whole cell vertically.
+	private func partialTateChuYokoCellRect(group: NSRange, covered: NSRange) -> CGRect? {
+		guard let cell = tateChuYokoCell(for: group) else { return nil }
+		let baseAttributes = attributedString.attributes(at: group.location, effectiveRange: nil)
+		let mini = PorticoTateChuYoko.miniLine(
+			groupText: (attributedString.string as NSString).substring(with: group),
+			baseAttributes: baseAttributes,
+			cellCross: cell.width,
+			stroke: nil)
+		let drawX = cell.midX - mini.width / 2
+		let localStart = covered.location - group.location
+		let localEnd = NSMaxRange(covered) - group.location
+		let startOffset = CGFloat(CTLineGetOffsetForStringIndex(mini.line, localStart, nil))
+		let endOffset = localEnd >= group.length
+			? mini.width
+			: CGFloat(CTLineGetOffsetForStringIndex(mini.line, localEnd, nil))
+		return CGRect(x: drawX + min(startOffset, endOffset), y: cell.minY,
+		              width: abs(endOffset - startOffset), height: cell.height)
 	}
 
 	// MARK: - Ruby geometry (Phase 3, step 4)
