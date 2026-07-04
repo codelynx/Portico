@@ -19,6 +19,11 @@ import Testing
 import Foundation
 import CoreGraphics
 import CoreText
+#if canImport(AppKit)
+import AppKit
+#else
+import UIKit
+#endif
 @testable import Portico
 
 private let tcyFont = CTFontCreateWithName("HiraMinProN-W3" as CFString, 14, nil)
@@ -335,4 +340,106 @@ private func inkedBBox(_ engine: PorticoTextLayoutEngine, band: ClosedRange<CGFl
 	let ink = outlined.inkBounds()
 	#expect(ink.width >= plain.width + 3 && ink.height >= plain.height + 3,
 	        "outline outsets the group ink (\(plain) → \(ink))")
+}
+
+// MARK: - Review-fold additions (tight ink, causal A/B, uncompressed, foreign ruby)
+
+@Test @MainActor func inkBoundsTightAgainstPaintedPixels() {
+	// Not just containment: with hidden-original glyph bounds EXCLUDED from
+	// the base union, inkBounds must hug the painted pixels (review fold —
+	// over-report was the bloated-selection-frame failure mode).
+	let engine = tcyEngine("あ12う")
+	let ink = engine.inkBounds()
+	let flipped = CGRect(
+		x: ink.minX, y: engine.bounds.height - ink.maxY,
+		width: ink.width, height: ink.height)
+	let bbox = inkedBBox(engine)
+	#expect(flipped.insetBy(dx: -1.5, dy: -1.5).contains(bbox), "containment")
+	#expect(flipped.width - bbox.width <= 4 && flipped.height - bbox.height <= 4,
+	        "tightness: inkBounds (\(flipped)) hugs pixels (\(bbox))")
+}
+
+@Test @MainActor func noInkOutsideMiniLineBBoxForGroupOnlyContent() {
+	// Stricter suppression gate (review fold): a group-only engine has NO
+	// alpha outside the mini-line's own bbox + AA slop.
+	let engine = tcyEngine("12")
+	let full = inkedBBox(engine)
+	let ink = engine.inkBounds()
+	let flipped = CGRect(
+		x: ink.minX, y: engine.bounds.height - ink.maxY,
+		width: ink.width, height: ink.height)
+	#expect(flipped.insetBy(dx: -2, dy: -2).contains(full),
+	        "every inked pixel (\(full)) within the mini-line ink (\(flipped)) — no stray originals")
+}
+
+@Test @MainActor func suppressionAttributesAreCausal() {
+	// The A/B (review fold): disable the plan-B attributes via the test seam
+	// and ink must increase MATERIALLY — proving the attributes do the
+	// suppressing (survives font/AA drift; compares the build to itself).
+	let suppressed = inkPixelCount(tcyEngine("12"))
+	PorticoTateChuYoko.suppressionDisabledForTesting = true
+	defer { PorticoTateChuYoko.suppressionDisabledForTesting = false }
+	let unsuppressed = inkPixelCount(tcyEngine("12"))
+	#expect(unsuppressed > suppressed + suppressed / 3,
+	        "disabling suppression adds the originals' ink (\(suppressed) → \(unsuppressed))")
+}
+
+@Test @MainActor func bangPairRendersUncompressed() {
+	// The uncompressed branch, exercised NATURALLY (review fold): half-width
+	// !? advances total well under one em, so the pair renders at natural
+	// width — no font-matrix compression.
+	let attrs: [NSAttributedString.Key: Any] = [.font: tcyFont]
+	let natural = CGFloat(CTLineGetTypographicBounds(
+		CTLineCreateWithAttributedString(NSAttributedString(string: "!?", attributes: attrs)),
+		nil, nil, nil))
+	let mini = PorticoTateChuYoko.miniLine(
+		groupText: "!?", baseAttributes: attrs, cellCross: 14, stroke: nil)
+	#expect(natural <= 14, "premise: the bang pair fits the cell (\(natural))")
+	#expect(abs(mini.width - natural) <= 0.5,
+	        "uncompressed branch: mini width (\(mini.width)) == natural (\(natural))")
+}
+
+@Test @MainActor func digitPairCompressesToCell() {
+	// The compressed branch, direct (review fold): digits exceed the cell,
+	// the mini-line compresses to fit, and a HUGE cell leaves it natural.
+	let attrs: [NSAttributedString.Key: Any] = [.font: tcyFont]
+	let compressed = PorticoTateChuYoko.miniLine(
+		groupText: "12", baseAttributes: attrs, cellCross: 14, stroke: nil)
+	#expect(compressed.width <= 14.5, "compressed to the cell, got \(compressed.width)")
+	let roomy = PorticoTateChuYoko.miniLine(
+		groupText: "12", baseAttributes: attrs, cellCross: 1000, stroke: nil)
+	let natural = CGFloat(CTLineGetTypographicBounds(
+		CTLineCreateWithAttributedString(NSAttributedString(string: "12", attributes: attrs)),
+		nil, nil, nil))
+	#expect(abs(roomy.width - natural) <= 0.5, "roomy cell: natural width")
+}
+
+@Test @MainActor func foreignRubyValueDoesNotSuppressGrouping() {
+	// Foreign (non-CTRubyAnnotation) values under the ruby key are tolerated
+	// everywhere else in Portico — they must not block grouping either
+	// (review fold: genuine-annotation validation parity).
+	let backing = NSMutableAttributedString(
+		string: "12", attributes: [.font: tcyFont])
+	backing.addAttribute(PorticoRuby.rubyKey, value: "not an annotation",
+	                     range: NSRange(location: 0, length: 2))
+	let engine = PorticoTextLayoutEngine(
+		attributedString: backing, orientation: .vertical, bounds: .zero)
+	engine.update(bounds: engine.measuredSize())
+	let kana = tcyEngine("あ").measuredSize()
+	#expect(abs(engine.measuredSize().height - kana.height) <= 2,
+	        "foreign ruby value: still ONE cell (\(engine.measuredSize()) vs \(kana)) — grouped")
+}
+
+@Test @MainActor func platformFontCompressesWithDescriptorPreserved() {
+	// The host feeds PLATFORM fonts (NSFont/UIFont — toll-free CTFont-
+	// bridged); compression must keep the face, not fall back (review fold).
+	#if canImport(AppKit)
+	let platformFont: Any = NSFont(name: "HiraMinProN-W3", size: 14)!
+	#else
+	let platformFont: Any = UIFont(name: "HiraMinProN-W3", size: 14)!
+	#endif
+	let mini = PorticoTateChuYoko.miniLine(
+		groupText: "12", baseAttributes: [.font: platformFont], cellCross: 14, stroke: nil)
+	#expect(mini.width <= 14.5, "platform font compresses, got \(mini.width)")
+	#expect(mini.ascent > 5, "real Mincho metrics survive (ascent \(mini.ascent)) — not a fallback face")
 }

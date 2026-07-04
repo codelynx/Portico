@@ -1017,10 +1017,12 @@ public class PorticoTextLayoutEngine {
 		// glyph drawing): group ranges must not paint phantom stroke outlines —
 		// zero the stroke width and clear the color for marker runs. The
 		// PR-2 post-pass strokes the mini-line itself (fuchi parity).
-		strokeString.enumerateAttribute(PorticoTateChuYoko.groupKey, in: fullRange) { value, range, _ in
-			guard value != nil else { return }
-			strokeString.addAttribute(strokeWidthKey, value: 0 as NSNumber, range: range)
-			strokeString.addAttribute(strokeColorKey, value: CGColor(gray: 0, alpha: 0), range: range)
+		if !PorticoTateChuYoko.suppressionDisabledForTesting {
+			strokeString.enumerateAttribute(PorticoTateChuYoko.groupKey, in: fullRange) { value, range, _ in
+				guard value != nil else { return }
+				strokeString.addAttribute(strokeWidthKey, value: 0 as NSNumber, range: range)
+				strokeString.addAttribute(strokeColorKey, value: CGColor(gray: 0, alpha: 0), range: range)
+			}
 		}
 
 		// R1 (verified by the rubyIsOutlined gate): CTRubyAnnotation glyphs do NOT
@@ -1363,8 +1365,20 @@ public class PorticoTextLayoutEngine {
 		var union = CGRect.null
 		for (line, origin) in zip(lines, origins) {
 			var local = CTLineGetBoundsWithOptions(line, [.useGlyphPathBounds])
+			// 縦中横 (review fold): suppression hides the original glyphs'
+			// PAINT but not their glyph-PATH bounds — a group-intersecting
+			// line's whole-line bounds would over-report around the cell
+			// (bloated selection/export tiles). Recompute such lines from
+			// NON-marker runs only; the mini-line union below supplies the
+			// group's real ink.
+			// (Review fold follow-up: a per-run non-marker recomputation was
+			// attempted and REVERTED — CTRunGetImageBounds returns rotated
+			// run-space bounds for vertical runs, a second coordinate space
+			// this file deliberately avoids. The hidden originals' path
+			// bounds are bounded by the tightness pin below instead.)
 			// Empty lines (e.g. "\n\n") yield null/empty glyph bounds — skip, or the
-			// union degrades.
+			// union degrades. (A group-ONLY line lands here too: its ink is
+			// exclusively the mini-line, unioned after this loop.)
 			guard !local.isNull, !local.isEmpty else { continue }
 
 			// LINE-EDGE ruby overhang: glyph-path line bounds include ruby
@@ -1420,11 +1434,18 @@ public class PorticoTextLayoutEngine {
 				baseAttributes: baseAttributes,
 				cellCross: cell.width,
 				stroke: nil)
+			// GLYPH-PATH bounds (baseline-relative), not typographic — the
+			// rest of the union is path-tight and the tightness pin holds
+			// ink to painted pixels.
+			let pathBounds = CTLineGetBoundsWithOptions(mini.line, [.useGlyphPathBounds])
+			guard !pathBounds.isNull, !pathBounds.isEmpty else { continue }
+			let drawX = cell.midX - mini.width / 2
+			let baseline = cell.midY - (mini.ascent - mini.descent) / 2
 			let inkRect = CGRect(
-				x: cell.midX - mini.width / 2,
-				y: cell.midY - (mini.ascent - mini.descent) / 2 - mini.descent,
-				width: mini.width,
-				height: mini.ascent + mini.descent
+				x: drawX + pathBounds.minX,
+				y: baseline + pathBounds.minY,
+				width: pathBounds.width,
+				height: pathBounds.height
 			).insetBy(dx: -tcyOutset, dy: -tcyOutset)
 			union = union.union(inkRect)
 		}
@@ -1466,12 +1487,9 @@ public class PorticoTextLayoutEngine {
 	/// pure derivation the reservation uses; shared by draw + inkBounds.
 	private func currentTateChuYokoGroups() -> [NSRange] {
 		guard orientation == .vertical else { return [] }
-		var rubyRanges: [NSRange] = []
-		let full = NSRange(location: 0, length: attributedString.length)
-		attributedString.enumerateAttribute(PorticoRuby.rubyKey, in: full) { value, range, _ in
-			if value != nil { rubyRanges.append(range) }
-		}
-		return PorticoTateChuYoko.groups(in: attributedString.string, excluding: rubyRanges)
+		return PorticoTateChuYoko.groups(
+			in: attributedString.string,
+			excluding: PorticoTateChuYoko.genuineRubyRanges(in: attributedString))
 	}
 
 	/// The 縦中横 cell in engine (bottom-left) coordinates, derived from the

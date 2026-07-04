@@ -13,13 +13,16 @@
 //  the current text, re-derived on every relayout.
 //
 //  Mechanism: each group gets a `CTRunDelegate` reserving ONE column cell
-//  plus a marker attribute carrying the group text. Delegate runs produce
-//  metrics and NO glyphs (Core Text draws nothing for them — the fill and
-//  stroke frames alike, since both derive from the same pure layout copy),
-//  so the original characters stay in the string with their UTF-16 indices
-//  PRESERVED: no replacement character, no index map. The draw post-pass
-//  (PR-2) paints each group as a tiny horizontal CTLine centered upright in
-//  its reserved cell.
+//  (per-glyph advance = cell/length — CT applies delegate width per glyph)
+//  plus a marker attribute carrying the group text. The delegate supplies
+//  METRICS ONLY — it does NOT suppress glyph drawing (PR-1 empirical pin
+//  falsified that belief; attachments only look suppressed because
+//  U+FFFC's glyph is blank). Suppression is the plan-B attributes: clear
+//  foreground on group ranges (fill frame) and zero stroke width / clear
+//  stroke color (stroke frame) — on layout copies only. The original
+//  characters stay in the string with their UTF-16 indices PRESERVED: no
+//  replacement character, no index map. The draw post-pass paints each
+//  group as a tiny horizontal CTLine centered upright in its reserved cell.
 //
 //  Placement is load-bearing: reservations live in the `layoutReadyString()`
 //  COPY, never the backing store — `inheritedAttributes` can't contaminate
@@ -104,11 +107,7 @@ enum PorticoTateChuYoko {
 	/// em cell per group via CTRunDelegate + marker. Call ONLY on the layout
 	/// copy, only for vertical orientation.
 	static func applyReservations(to layoutString: NSMutableAttributedString) {
-		let fullRange = NSRange(location: 0, length: layoutString.length)
-		var excluded: [NSRange] = []
-		layoutString.enumerateAttribute(PorticoRuby.rubyKey, in: fullRange) { value, range, _ in
-			if value != nil { excluded.append(range) }
-		}
+		let excluded = genuineRubyRanges(in: layoutString)
 		let text = layoutString.string
 		for group in groups(in: text, excluding: excluded) {
 			let fontSize = PorticoTextLayoutEngine.pointSize(
@@ -131,8 +130,10 @@ enum PorticoTateChuYoko {
 			// delegate, so hide the FILL here; the stroke frame zeroes its
 			// stroke width for group ranges (phantom outlines otherwise).
 			// Layout copy only — the backing store never sees any of this.
-			layoutString.addAttribute(
-				.foregroundColor, value: CGColor(gray: 0, alpha: 0), range: group)
+			if !suppressionDisabledForTesting {
+				layoutString.addAttribute(
+					.foregroundColor, value: CGColor(gray: 0, alpha: 0), range: group)
+			}
 		}
 	}
 
@@ -180,21 +181,43 @@ enum PorticoTateChuYoko {
 		var (line, width, ascent, descent) = build(attributes)
 		if width > cellCross, width > 0 {
 			// Compress the FONT, not the context — stroking compressed glyph
-			// outlines keeps the rim's absolute width.
+			// outlines keeps the rim's absolute width. Copy-with-attributes
+			// preserves the full descriptor (review fold: platform fonts are
+			// toll-free CTFont-bridged, and a name round-trip would drop
+			// fallbacks/features); absent/foreign fonts degrade to the CT
+			// default at the same size.
 			let scale = cellCross / width
 			var matrix = CGAffineTransform(scaleX: scale, y: 1)
-			let baseSize = PorticoTextLayoutEngine.pointSize(ofFontAttribute: attributes[.font])
-			let baseName: String
 			if let value = attributes[.font], CFGetTypeID(value as CFTypeRef) == CTFontGetTypeID() {
-				baseName = CTFontCopyPostScriptName(value as! CTFont) as String
+				attributes[.font] = CTFontCreateCopyWithAttributes(value as! CTFont, 0, &matrix, nil)
 			} else {
-				baseName = "Helvetica"
+				let size = PorticoTextLayoutEngine.pointSize(ofFontAttribute: attributes[.font])
+				attributes[.font] = CTFontCreateWithName("Helvetica" as CFString, size, &matrix)
 			}
-			attributes[.font] = CTFontCreateWithName(baseName as CFString, baseSize, &matrix)
 			(line, width, ascent, descent) = build(attributes)
 		}
 		return (line, width, ascent, descent)
 	}
+
+	/// Ranges carrying a GENUINE `CTRubyAnnotation` — foreign values under
+	/// the ruby key are tolerated everywhere else in Portico and must not
+	/// suppress grouping either (review fold: exclusion uses the same
+	/// validation posture as the ruby code itself).
+	static func genuineRubyRanges(in attributed: NSAttributedString) -> [NSRange] {
+		var ranges: [NSRange] = []
+		let full = NSRange(location: 0, length: attributed.length)
+		attributed.enumerateAttribute(PorticoRuby.rubyKey, in: full) { value, range, _ in
+			guard let value, CFGetTypeID(value as CFTypeRef) == CTRubyAnnotationGetTypeID() else { return }
+			ranges.append(range)
+		}
+		return ranges
+	}
+
+	/// Test seam (review fold, the causal suppression A/B): when true, the
+	/// plan-B suppression attributes are NOT applied — tests assert that ink
+	/// increases materially, proving the attributes do the suppressing.
+	/// Never set in production.
+	static var suppressionDisabledForTesting = false
 
 	private static func makeDelegate(_ metrics: CellMetrics) -> CTRunDelegate {
 		var callbacks = CTRunDelegateCallbacks(
