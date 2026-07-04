@@ -6,13 +6,15 @@ import AppKit
 public class PorticoTextView: NSView, NSMenuItemValidation {
 	public let layoutEngine: PorticoTextLayoutEngine
 
-	/// Optional client-supplied selection action (design §7.2 seam). When set, a menu item
-	/// titled `title` is added to the right-click context menu whenever there's a non-empty
-	/// selection; choosing it calls `handler` with the current selection range and its
-	/// first-segment anchor rect (top-left view coords). `nil` → no item (opt-out default). The
-	/// framework owns the menu plumbing; the label + whatever UI the handler shows are the
-	/// client's (e.g. a ruby-reading popover).
-	public var onSelectionMenuAction: PorticoSelectionMenuAction?
+	/// Optional client-supplied selection-menu PROVIDER (design §7.2 seam, provider form since
+	/// 0.6.0 PR-3): called AT MENU-OPEN TIME with the current selection so titles can be
+	/// state-dependent ("縦中横" / "縦中横を解除"); each returned action becomes a context-menu
+	/// item, and choosing one calls its handler with the selection range and its first-segment
+	/// anchor rect (top-left view coords). `nil` or `[]` → no items (opt-out default). The
+	/// framework owns the menu plumbing; titles + whatever UI the handlers show are the
+	/// client's (e.g. a ruby-reading popover). Single-action clients wrap via
+	/// `PorticoView(onSelectionMenuAction:)`.
+	public var selectionMenuProvider: PorticoSelectionMenuProvider?
 
 	public init(frame: NSRect, layoutEngine: PorticoTextLayoutEngine) {
 		self.layoutEngine = layoutEngine
@@ -145,23 +147,34 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 		menu.addItem(withTitle: "Cut", action: #selector(cut(_:)), keyEquivalent: "").target = self
 		menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "").target = self
 		menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "").target = self
-		if let action = onSelectionMenuAction, (layoutEngine.selectionRange?.length ?? 0) > 0 {
-			menu.addItem(.separator())
-			let item = NSMenuItem(title: action.title,
-								  action: #selector(performSelectionMenuAction(_:)), keyEquivalent: "")
-			item.target = self
-			menu.addItem(item)
+		if let provider = selectionMenuProvider,
+		   let selection = layoutEngine.selectionRange, selection.length > 0 {
+			let actions = provider(selection) // menu-open evaluation: titles reflect state NOW
+			if !actions.isEmpty { menu.addItem(.separator()) }
+			for (index, action) in actions.enumerated() {
+				let item = NSMenuItem(title: action.title,
+									  action: #selector(performSelectionMenuAction(_:)), keyEquivalent: "")
+				item.target = self
+				item.representedObject = index
+				menu.addItem(item)
+			}
 		}
 		return menu
 	}
 
-	/// Target of both the context-menu item and any app main-menu command (e.g. `Edit ▸ Ruby…`)
-	/// wired to this selector via the responder chain. Re-reads the selection at invocation time.
+	/// Target of both the context-menu items and any app main-menu command (e.g. `Edit ▸ Ruby…`)
+	/// wired to this selector via the responder chain. Re-evaluates the provider and re-reads the
+	/// selection at invocation time. Context items carry their action index in
+	/// `representedObject`; a bare responder-chain send (no index) invokes the FIRST action —
+	/// main-menu commands wanting a specific action should drive the engine API directly instead.
 	@objc public func performSelectionMenuAction(_ sender: Any?) {
-		guard let action = onSelectionMenuAction,
+		guard let provider = selectionMenuProvider,
 			  let selection = layoutEngine.selectionRange, selection.length > 0,
 			  let anchor = layoutEngine.anchorRectForSelection() else { return }
-		action.handler(selection, anchor)
+		let actions = provider(selection)
+		let index = ((sender as? NSMenuItem)?.representedObject as? Int) ?? 0
+		guard actions.indices.contains(index) else { return }
+		actions[index].handler(selection, anchor)
 	}
 
 	/// Copy the selection to the pasteboard as Aozora notation, so ruby survives copy/paste.
@@ -208,7 +221,7 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 		case #selector(selectAll(_:)):
 			return layoutEngine.attributedString.length > 0
 		case #selector(performSelectionMenuAction(_:)):
-			return onSelectionMenuAction != nil && hasSelection
+			return selectionMenuProvider != nil && hasSelection
 		default:
 			return true
 		}
@@ -282,13 +295,14 @@ public class PorticoTextView: UIView, UITextInput {
 
 	public let layoutEngine: PorticoTextLayoutEngine
 
-	/// Optional client-supplied selection action (design §7.2 seam). When set, an item titled
-	/// `title` is appended to the native selection edit menu (alongside Copy / Look Up) whenever
-	/// there's a non-empty selection; choosing it calls `handler` with the current selection range
-	/// and its first-segment anchor rect (top-left view coords). `nil` → no item (opt-out default).
-	/// Added through `editMenu(for:suggestedActions:)` — the hook `UITextInteraction` already
-	/// calls — so it augments the existing menu rather than installing a rival interaction.
-	public var onSelectionMenuAction: PorticoSelectionMenuAction?
+	/// Optional client-supplied selection-menu PROVIDER (design §7.2 seam, provider form since
+	/// 0.6.0 PR-3): called AT MENU-OPEN TIME with the current selection so titles can be
+	/// state-dependent; each returned action becomes an item on the native selection edit menu
+	/// (ahead of Copy / Look Up), and choosing one calls its handler with the selection range and
+	/// its first-segment anchor rect (top-left view coords). `nil` or `[]` → no items (opt-out
+	/// default). Added through `editMenu(for:suggestedActions:)` — the hook `UITextInteraction`
+	/// already calls — so it augments the existing menu rather than installing a rival interaction.
+	public var selectionMenuProvider: PorticoSelectionMenuProvider?
 
 	public init(frame: CGRect, layoutEngine: PorticoTextLayoutEngine) {
 		self.layoutEngine = layoutEngine
@@ -526,17 +540,20 @@ public class PorticoTextView: UIView, UITextInput {
 	/// actions, `suggestedActions` is now the full Cut/Copy/Paste/Look Up/Translate/… list, and
 	/// appending our item would bury it below the fold on the long iOS edit menu.
 	public func editMenu(for textRange: UITextRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
-		guard let action = onSelectionMenuAction,
+		guard let provider = selectionMenuProvider,
 			  let selection = layoutEngine.selectionRange, selection.length > 0 else {
 			return nil // nil presents the default system menu unchanged (SDK contract)
 		}
-		let item = UIAction(title: action.title) { [weak self] _ in
-			guard let self,
-				  let sel = self.layoutEngine.selectionRange, sel.length > 0,
-				  let anchor = self.layoutEngine.anchorRectForSelection() else { return }
-			action.handler(sel, anchor)
+		let items = provider(selection).map { action in // menu-open evaluation
+			UIAction(title: action.title) { [weak self] _ in
+				guard let self,
+					  let sel = self.layoutEngine.selectionRange, sel.length > 0,
+					  let anchor = self.layoutEngine.anchorRectForSelection() else { return }
+				action.handler(sel, anchor)
+			}
 		}
-		let ours = UIMenu(title: "", options: .displayInline, children: [item])
+		guard !items.isEmpty else { return nil }
+		let ours = UIMenu(title: "", options: .displayInline, children: items)
 		return UIMenu(children: [ours] + suggestedActions)
 	}
 

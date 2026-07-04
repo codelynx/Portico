@@ -236,3 +236,83 @@ private func cells(_ engine: PorticoTextLayoutEngine) -> CGFloat {
 	#expect(!ink.isNull && ink.width <= engine.bounds.width + 1,
 	        "compressed within the column, ink \(ink) in \(engine.bounds)")
 }
+
+// MARK: - (6) Clipboard + menu toggle (0.6.0 PR-3)
+
+@Test @MainActor func copyPasteAdjacentYieldsDistinctCells() {
+	// The review's paste-coalescing hazard, closed by construction: copy
+	// serializes to the OWNED notation; paste parses it, minting a FRESH
+	// identity box per command — pasting a combine right after itself
+	// yields two distinct cells, never one welded 4-digit span.
+	let engine = ovEngine("12")
+	engine.setTateChuYoko(.combine, for: NSRange(location: 0, length: 2))
+	engine.setSelectedRange(NSRange(location: 0, length: 2))
+	let copied = engine.serializedSelection()
+	#expect(copied == "[[tcy:12]]", "clipboard carries the owned grammar, got \(copied ?? "nil")")
+	engine.setSelectedRange(NSRange(location: 2, length: 0)) // caret to end, selection cleared
+	engine.insertNotation(copied!)
+	#expect(engine.attributedString.string == "1212")
+	let groups = PorticoTateChuYoko.effectiveGroups(in: engine.attributedString)
+	#expect(groups == [NSRange(location: 0, length: 2), NSRange(location: 2, length: 2)],
+	        "two distinct cells, got \(groups)")
+}
+
+@Test @MainActor func togglePinsApplyThenReleaseClears() {
+	// apply on plain text → one combine span; release on a pure explicit
+	// combine (4 digits — no auto group underneath) just CLEARS, storing
+	// no unnecessary suppress.
+	let engine = ovEngine("1234")
+	#expect(engine.tateChuYokoToggle(for: NSRange(location: 0, length: 4)) == .apply)
+	engine.performTateChuYokoToggle(for: NSRange(location: 0, length: 4))
+	#expect(PorticoTateChuYoko.effectiveGroups(in: engine.attributedString)
+	        == [NSRange(location: 0, length: 4)])
+	#expect(engine.tateChuYokoToggle(for: NSRange(location: 0, length: 4)) == .release)
+	engine.performTateChuYokoToggle(for: NSRange(location: 0, length: 4))
+	#expect(PorticoTateChuYoko.effectiveGroups(in: engine.attributedString).isEmpty)
+	#expect(engine.tateChuYokoOverride(at: 0) == nil, "clearing sufficed — no suppress stored")
+}
+
+@Test @MainActor func releaseOnAutoPairSuppressesAndUndoesAsOneStep() {
+	let engine = ovEngine("あ12う")
+	// the auto pair renders → release must SUPPRESS (clearing changes nothing)
+	#expect(engine.tateChuYokoToggle(for: NSRange(location: 1, length: 2)) == .release)
+	engine.performTateChuYokoToggle(for: NSRange(location: 1, length: 2))
+	#expect(PorticoTateChuYoko.effectiveGroups(in: engine.attributedString).isEmpty)
+	#expect(engine.tateChuYokoOverride(at: 1) == .suppress)
+	engine.undoManager.undo() // ONE step restores the pair
+	#expect(PorticoTateChuYoko.effectiveGroups(in: engine.attributedString)
+	        == [NSRange(location: 1, length: 2)])
+}
+
+@Test @MainActor func mixedSelectionResolvesApplyWins() {
+	// あ12 — the pair renders, あ doesn't → mixed → APPLY (bold-editor
+	// convention), normalizing the whole selection into one span.
+	let engine = ovEngine("あ12う")
+	#expect(engine.tateChuYokoToggle(for: NSRange(location: 0, length: 3)) == .apply)
+	engine.performTateChuYokoToggle(for: NSRange(location: 0, length: 3))
+	#expect(PorticoTateChuYoko.effectiveGroups(in: engine.attributedString)
+	        == [NSRange(location: 0, length: 3)])
+}
+
+@Test @MainActor func applyOnSuppressedRangeRemovesSuppress() {
+	// "縦中横 on a suppressed range removes the suppress" — never a
+	// suppress-still-wins surprise.
+	let engine = ovEngine("12")
+	engine.setTateChuYoko(.suppress, for: NSRange(location: 0, length: 2))
+	#expect(PorticoTateChuYoko.effectiveGroups(in: engine.attributedString).isEmpty)
+	#expect(engine.tateChuYokoToggle(for: NSRange(location: 0, length: 2)) == .apply)
+	engine.performTateChuYokoToggle(for: NSRange(location: 0, length: 2))
+	#expect(engine.tateChuYokoOverride(at: 0) == .combine)
+	#expect(PorticoTateChuYoko.effectiveGroups(in: engine.attributedString)
+	        == [NSRange(location: 0, length: 2)])
+}
+
+@Test @MainActor func copySlicingThroughRubyAndOverrideStaysFaithful() {
+	// Selection slicing an annotated document serializes what the slice
+	// carries: the override fragment inside the selection round-trips.
+	let engine = ovEngine("あ1234う")
+	engine.setTateChuYoko(.combine, for: NSRange(location: 1, length: 4))
+	engine.setSelectedRange(NSRange(location: 0, length: 4)) // あ123 — slices the span
+	let copied = engine.serializedSelection()
+	#expect(copied == "あ[[tcy:123]]", "sliced override serializes its selected part, got \(copied ?? "nil")")
+}

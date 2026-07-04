@@ -14,11 +14,16 @@ private func hasRuby(_ s: NSAttributedString, at index: Int) -> Bool {
 }
 
 private func editEngine(_ notation: String) -> PorticoTextLayoutEngine {
-	PorticoTextLayoutEngine(
+	let engine = PorticoTextLayoutEngine(
 		attributedString: PorticoRuby.parse(notation),
 		orientation: .horizontal,
 		bounds: CGSize(width: 400, height: 400)
 	)
+	// This suite deliberately exercises live 《》 typing conversion (§7a),
+	// which defaults OFF since 0.6.0 — opt in here; the default is pinned
+	// by typingAozoraStaysLiteralByDefault below.
+	engine.importsAozoraRubyWhileTyping = true
+	return engine
 }
 
 // MARK: - Undo / Redo (Phase 2: structural ops — paste, setRuby, inline conversion)
@@ -419,7 +424,8 @@ private func mutable(_ notation: String) -> NSMutableAttributedString {
 @Test func serializedSelectionEmitsNotationForRubyRange() {
 	let e = editEngine("漢字《かんじ》の") // "漢字の", ruby [0,2)
 	e.setSelectedRange(NSRange(location: 0, length: 2)) // select 漢字 (the group)
-	#expect(e.serializedSelection() == "漢字《かんじ》") // minimal form — kanji base auto-detects
+	// 0.6.0: the clipboard carries the OWNED grammar (nothing serializes to 《》)
+	#expect(e.serializedSelection() == "[[ruby:漢字|かんじ]]")
 }
 
 @Test func serializedSelectionNilWithoutSelection() {
@@ -459,9 +465,31 @@ private func mutable(_ notation: String) -> NSMutableAttributedString {
 // MARK: - Step 5: inline notation conversion (§7a)
 
 private func emptyEngine() -> PorticoTextLayoutEngine {
-	PorticoTextLayoutEngine(attributedString: NSAttributedString(string: ""), orientation: .horizontal, bounds: CGSize(width: 400, height: 400))
+	let engine = PorticoTextLayoutEngine(attributedString: NSAttributedString(string: ""), orientation: .horizontal, bounds: CGSize(width: 400, height: 400))
+	engine.importsAozoraRubyWhileTyping = true // §7a suite opts in (default off since 0.6.0)
+	return engine
 }
 private func type(_ s: String, into e: PorticoTextLayoutEngine) { for ch in s { e.insertText(String(ch)) } }
+
+@Test func typingAozoraStaysLiteralByDefault() {
+	// 0.6.0 owner ruling: Aozora imports at explicit boundaries (paste,
+	// parse(aozora:)) — DEFAULT typing leaves 《》 as the punctuation it is.
+	let e = PorticoTextLayoutEngine(attributedString: NSAttributedString(string: ""),
+	                                orientation: .horizontal, bounds: CGSize(width: 400, height: 400))
+	for ch in "猫《ねこ》" { e.insertText(String(ch)) }
+	#expect(e.attributedString.string == "猫《ねこ》")
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString) == nil)
+}
+
+@Test func pasteImportsAozoraRegardlessOfTypingFlag() {
+	// The paste boundary imports 《》 even with live typing conversion off.
+	let e = PorticoTextLayoutEngine(attributedString: NSAttributedString(string: ""),
+	                                orientation: .horizontal, bounds: CGSize(width: 400, height: 400))
+	e.insertNotation("吾輩《わがはい》は猫《ねこ》である")
+	#expect(e.attributedString.string == "吾輩は猫である")
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "わがはい")
+	#expect(PorticoRuby.rubyGroup(at: 3, in: e.attributedString)?.reading == "ねこ")
+}
 
 @Test func inlineMatchDetectsAutoBase() {
 	let m = PorticoRuby.inlineRubyMatch(in: "は猫《ねこ》" as NSString, closingAt: 5)
@@ -520,6 +548,7 @@ private func type(_ s: String, into e: PorticoTextLayoutEngine) { for ch in s { 
 	let key = NSAttributedString.Key("test.k")
 	let initial = NSMutableAttributedString(string: "猫", attributes: [key: 7])
 	let e = PorticoTextLayoutEngine(attributedString: initial, orientation: .horizontal, bounds: CGSize(width: 400, height: 400))
+	e.importsAozoraRubyWhileTyping = true // §7a opt-in (default off since 0.6.0)
 	e.cursorIndex = 1
 	type("《ねこ》", into: e)
 	#expect(e.attributedString.string == "猫")

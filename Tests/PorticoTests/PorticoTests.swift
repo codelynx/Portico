@@ -296,6 +296,7 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 
 @Test func imeCommitFormingRubyUndoesInTwoSteps() {
 	let e = engine("")
+	e.importsAozoraRubyWhileTyping = true // §7a opt-in (default off since 0.6.0)
 	e.setMarkedText("漢字《かんじ》", selectedRange: NSRange(location: 0, length: 6), replacementRange: nil)
 	e.insertText("漢字《かんじ》") // commit the composed notation → inline conversion fires
 	#expect(e.attributedString.string == "漢字")

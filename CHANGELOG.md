@@ -2,6 +2,50 @@
 
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
+## [0.6.0] - 2026-07-04
+### Added — 縦中横 overrides + the OWNED notation
+The artist-intent layer over 0.5.0's automatic rule, and the release where the
+serialization contract becomes Portico's own.
+
+- **`PorticoTateChuYoko.Override`** — a persisted, identity-boxed attribute
+  (`combine` / `suppress`) on `overrideKey`: force-combine what the automatic rule
+  wouldn't ("123", "'26"), or suppress an auto pair. Identity boxing is load-bearing:
+  adjacent combines stay distinct cells (NSAttributedString coalesces equal values).
+  Precedence: suppress > combine > automatic; ruby beats all. Horizontal: inert.
+- **`effectiveGroups`** — one normalized derivation every consumer reads (ruby excludes
+  first; overrides mask intersecting auto groups; combine contributes its non-ruby
+  fragments; sorted, non-overlapping).
+- **Engine API** — `setTateChuYoko(_:for:)` (range surgery + undo, ruby's template),
+  `tateChuYokoOverride(at:)`, and the menu pair `tateChuYokoToggle(for:)` /
+  `performTateChuYokoToggle(for:)` (apply-wins mixed state; release clears explicit
+  overrides then suppresses surviving auto groups, one undo step). Editing: typing
+  strictly inside an override extends it, boundary typing doesn't (ruby parity).
+- **`PorticoNotation`** — the owned plain-text encoding for ALL annotations:
+  `[[ruby:漢字|かんじ]]`, `[[tcy:123]]`, `[[tcy-off:12]]`; open keyword namespace for
+  future annotation kinds (kenten, warichu, …). Uniform escaping — the four
+  metacharacters `[ ] | \` are always backslash-escaped, everywhere; `\x` reads as
+  literal `x`. FAIL-SAFE parsing: any malformed command (unknown keyword, empty payload,
+  stray pipe, unterminated, nested `[[`) re-emits its entire raw region as literal text
+  with zero annotations — content is never destroyed by markup. serialize∘parse is
+  identity (property-swept incl. newlines and non-BMP); a TCY override straddling ruby
+  serializes its surviving non-ruby fragments.
+- **Selection-menu PROVIDER** — `PorticoSelectionMenuProvider` replaces the
+  single-action seam internally (the old `onSelectionMenuAction:` inits wrap into it):
+  actions are evaluated at menu-open, so titles can be state-dependent
+  ("縦中横" / "縦中横を解除"). Example wires Ruby… + 縦中横 on both platforms (⇧⌘T on
+  macOS).
+
+### Changed — Aozora is now import-only (BREAKING defaults)
+- **Copy/paste carries `PorticoNotation`**, not Aozora — nothing ever serializes to
+  `《》` again. Pasting a combined span next to itself yields distinct cells by
+  construction (fresh identity box per parsed command).
+- **Live `《》` typing conversion is OFF by default** — new engine flag
+  `importsAozoraRubyWhileTyping` (the Example opts in). The PASTE boundary imports
+  Aozora regardless (`insertNotation` layers a `《》` pass after the owned-grammar
+  parse), and `PorticoNotation.parse(aozora:)` remains the explicit one-way importer.
+- `PorticoRuby.setRuby` now clears any 縦中横 override under the new base (surgery
+  symmetry — an override never stays stored under ruby).
+
 ## [0.5.0] - 2026-07-04
 ### Added — 縦中横 (tate-chū-yoko), the automatic upright-in-vertical rule
 Slice 4 of the manga-lettering arc (MangaLoft text objects v1 ship gate). Scope pinned at

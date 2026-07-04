@@ -232,6 +232,31 @@ public enum PorticoRuby {
 		u == 0x000A || u == 0x000D || u == 0x2028 || u == 0x2029
 	}
 
+	/// One-way Aozora import over an already-attributed string — the PASTE boundary (0.6.0
+	/// owner ruling: paste imports `《》`, default typing does not). Converts every complete
+	/// `[｜]base《reading》` run to a ruby group, preserving the base's other attributes; runs
+	/// whose auto-base would swallow existing ruby are limited exactly like live typing
+	/// (`inlineRubyMatch`'s `isRuby` exclusion). Scans back-to-front so earlier ranges stay
+	/// valid as marks are removed.
+	static func importAozora(in mutable: NSMutableAttributedString) {
+		var index = (mutable.string as NSString).length - 1
+		while index >= 0 {
+			let ns = mutable.string as NSString
+			if ns.character(at: index) == rubyCloseUnit,
+			   let match = inlineRubyMatch(
+					in: ns, closingAt: index,
+					isRuby: { mutable.attribute(rubyKey, at: $0, effectiveRange: nil) != nil }) {
+				let base = NSMutableAttributedString(
+					attributedString: mutable.attributedSubstring(from: match.baseRange))
+				setRuby(match.reading, for: NSRange(location: 0, length: base.length), in: base)
+				mutable.replaceCharacters(in: match.sourceRange, with: base)
+				index = match.sourceRange.location - 1
+			} else {
+				index -= 1
+			}
+		}
+	}
+
 	/// A complete inline ruby run `[｜]base《reading》`, detected at a just-typed `》`.
 	public struct InlineRubyMatch: Equatable {
 		/// Full range of the run in the source (incl. `｜`, `《`, `》`) — the span to replace.

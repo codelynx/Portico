@@ -31,7 +31,11 @@ From the **user's** side:
 - **縦中横 (tate-chū-yoko)** — automatic, no markup: two-digit numbers ("12") and
   half-width `!?`-family pairs render **upright in one column cell** in vertical text,
   with correct wrapping, selection, caret, and editing through the group. Pure layout
-  rule re-derived from the text; nothing is persisted.
+  rule re-derived from the text; nothing is persisted for the automatic cases.
+- **縦中横 overrides** (0.6.0) — artist intent over the rule: force-combine any range
+  ("123", "'26") or suppress an auto pair, via a persisted attribute + a
+  state-dependent menu toggle (縦中横 / 縦中横を解除); serialized as `[[tcy:…]]` /
+  `[[tcy-off:…]]` in the owned notation.
 - **Outline / 縁取り (fuchi)** — whole-text rim behind the fill (manga lettering over
   artwork); ruby and 縦中横 groups are outlined too, at the same absolute rim width.
 - **Line pitch control** — a uniform, ruby-reserving line pitch with a runtime multiplier.
@@ -87,11 +91,14 @@ Two layers, cleanly separated:
   on iOS) — thin wrappers that connect the engine to the platform: events, IME, native selection
   UI, clipboard, and the menu seam.
 
-**Ruby model.** A ruby group is *one contiguous base range + one reading*, stored as a
-`CTRubyAnnotation` attribute over the base — the reading is **not** in the backing string, so
-string indices, hit-testing, and selection are unaffected. The public interchange format is
-**Aozora-style notation** (`漢字《かんじ》`); `PorticoRuby.parse` / `serialize` convert between text
-and attributed string.
+**Annotation model.** The `NSAttributedString` IS the model: ruby (one contiguous base range +
+one reading, stored as a `CTRubyAnnotation` attribute) and 縦中横 overrides (an identity-boxed
+attribute) live as attributes over the base — never in the backing string, so string indices,
+hit-testing, and selection are unaffected. The public interchange format is the **owned
+notation** (`PorticoNotation`: `[[ruby:漢字|かんじ]]`, `[[tcy:123]]`, `[[tcy-off:12]]` — uniform
+escaping, fail-safe parsing, one keyword per future annotation kind). Aozora `《》` remains a
+**one-way import** (`PorticoNotation.parse(aozora:)`, and the paste boundary); nothing ever
+serializes to it.
 
 **Rendering ownership** differs per platform (this is the source of most platform-specific
 behavior): macOS draws selection + caret itself; iOS lets `UITextInteraction` own them (handles,
@@ -117,24 +124,31 @@ struct ContentView: View {
 
 ### 1. Author & persist ruby
 
-Notation is the authoring and persistence format:
+The owned notation (`PorticoNotation`, 0.6.0) is the persistence format — one namespaced span
+grammar for every annotation kind:
 
-| Form | Example | Base | Reading |
-|------|---------|------|---------|
-| **Auto** (kanji) | `漢字《かんじ》` | the preceding run of kanji | かんじ |
-| **Explicit** (`｜`) | `｜大人《おとな》` | text from `｜` up to `《` | おとな |
+| Command | Meaning |
+|---------|---------|
+| `[[ruby:漢字\|かんじ]]` | ruby (explicit base \| reading) |
+| `[[tcy:123]]` | 縦中横 force-combine |
+| `[[tcy-off:12]]` | 縦中横 suppress (un-combine an auto pair) |
 
 ```swift
-let attributed = PorticoRuby.parse("吾輩《わがはい》は猫《ねこ》である。")
-let notation   = PorticoRuby.serialize(attributed)   // back to text; parse(serialize(x)) round-trips
+let attributed = PorticoNotation.parse("[[ruby:吾輩|わがはい]]は[[ruby:猫|ねこ]]である。")
+let notation   = PorticoNotation.serialize(attributed)  // parse(serialize(x)) is identity
 
-// Apply base attributes (font/colour) to the whole string while attaching ruby:
-let styled = PorticoRuby.parse("猫《ねこ》", attributes: [.font: someFont])
+// Apply base attributes (font/colour) to the whole string while attaching annotations:
+let styled = PorticoNotation.parse("[[ruby:猫|ねこ]]", attributes: [.font: someFont])
+
+// Aozora-notation text imports one-way (nothing ever serializes back to 《》):
+let imported = PorticoNotation.parse(aozora: "吾輩《わがはい》は猫《ねこ》である。")
 ```
 
-`serialize` emits **minimal** notation — it drops the `｜` wherever auto-detection recovers the same
-base, so output reads like hand-authored Aozora. Round-trip is guaranteed for text without literal
-`《`, `》`, `｜` (v1 has no escaping).
+The four metacharacters `[ ] | \` are always backslash-escaped; `\x` reads as literal `x`.
+Round-trip is guaranteed for **any** content — malformed markup fails safe as visible literal
+text, never destroyed content and never a stray annotation. Automatic 縦中横 groups serialize
+as plain text (only artist overrides carry commands). The legacy `PorticoRuby.parse`/`serialize`
+(Aozora, ruby-only, no escaping) remain for import-side compatibility.
 
 ### 2. Render & switch orientation
 
@@ -160,6 +174,21 @@ view coordinates). You supply the reading UI; you write the change with **`engin
 model-scoped. Opt-out by default — no action, no menu item. For a macOS `Edit ▸ …` command, wire a
 main-menu item to the view's `performSelectionMenuAction(_:)` (the
 [Example](Example/Example/ExampleApp.swift) does this with a `⇧⌘R` shortcut).
+
+For **multiple items or state-dependent titles**, pass `selectionMenuActions:` — a provider
+called at menu-open with the current selection. The Example uses it to add the 縦中横 toggle
+beside Ruby…, with its title read from `engine.tateChuYokoToggle(for:)`:
+
+```swift
+PorticoView(engine: engine, selectionMenuActions: { range in
+    [
+        PorticoSelectionMenuAction(title: "Ruby…") { range, anchor in /* popover */ },
+        PorticoSelectionMenuAction(
+            title: engine.tateChuYokoToggle(for: range) == .release ? "縦中横を解除" : "縦中横"
+        ) { range, _ in engine.performTateChuYokoToggle(for: range) },
+    ]
+})
+```
 
 ```swift
 struct RubyEditor: View {
@@ -203,14 +232,17 @@ PorticoRuby.rubyGroups(in: range, of: attributed)    // groups intersecting a ra
 PorticoRuby.setRuby(_:for:in:)                        // add / edit / remove (nil, empty, or whitespace-only removes)
 ```
 
-Inline authoring also works while typing: entering `漢字《かんじ》` converts to a ruby group on the
-closing `》` (committed text only, never inside IME composition).
+Inline authoring while typing — entering `漢字《かんじ》` converting to a ruby group on the
+closing `》` — is **opt-in since 0.6.0** (`engine.importsAozoraRubyWhileTyping = true`;
+committed text only, never inside IME composition). Off by default: `《》` is legitimate title
+punctuation, and Aozora import belongs to explicit boundaries (paste always imports it).
 
 ### 5. Clipboard
 
 Cut / Copy / Paste / Select-All are built in on both platforms (menu items and ⌘/hardware
-shortcuts). Copy serializes the selection to notation and Paste parses it, so **ruby survives
-copy/paste** within Portico; plain text copies/pastes as-is.
+shortcuts). Copy serializes the selection to the owned notation and Paste parses it, so **ruby
+and 縦中横 overrides survive copy/paste** within Portico; plain text copies/pastes as-is. Paste
+also imports Aozora `《》` from external text (one-way — copy never emits it).
 
 ### 6. Drive the engine directly (headless or custom view)
 
@@ -336,12 +368,13 @@ Layout, rendering, selection, IME, ruby (parse / serialize / edit), 縦中横, o
 headless measurement/rendering, navigation, clipboard, and undo/redo are in place on both
 platforms. Consciously deferred:
 
-- **Escaping** of literal `《` / `》` / `｜` in body text (they're treated as control characters).
 - **Mono-/jukugo-ruby** (per-character readings) — v1 is group-ruby.
 - **Public ruby styling knobs** (alignment / overhang / scale) — v1 uses sane fixed defaults.
 - iOS **vertical** native selection handles/loupe.
-- **Per-run 縦中横 override** (force-combine / rotate) — the automatic rule covers the
-  common manga cases; an explicit control is designed-for but not built.
+- **縦中横 `rotate`** (glyph-form control for lone characters) — combine/suppress shipped in
+  0.6.0; rotate is a different mechanism with no menu use-case yet.
+- The **legacy Aozora path** (`PorticoRuby.parse`/`serialize`) still has no escaping — by
+  design, it's import-only; the owned notation escapes everything.
 
 ## Documentation
 
@@ -353,8 +386,8 @@ platforms. Consciously deferred:
 - [Headless rendering](Docs/HeadlessRendering.md) — the raster-host recipe.
 - [Changelog](CHANGELOG.md).
 
-A runnable demo is in [`Example/`](Example/): horizontal ⇄ vertical toggle, ruby rendering, and
-the select → menu → popover editor.
+A runnable demo is in [`Example/`](Example/): horizontal ⇄ vertical toggle, ruby rendering,
+the select → menu → popover editor, and the 縦中横 toggle (select "158" in vertical → 縦中横).
 
 ## License
 

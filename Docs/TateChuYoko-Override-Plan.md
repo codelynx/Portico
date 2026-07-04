@@ -177,9 +177,10 @@ needs no popover.
 - **MangaLoft**: consumes automatically at render (provider re-measures) — but the
   MENU/inspector surface and `TextStyle`-level persistence questions are MangaLoft
   work, explicitly OUT of this Portico slice. The document model stores content
-  strings; the override must survive MangaLoft's serialize path → it does, because
-  content is serialized via `PorticoRuby.serialize` (notation carries it). Verify with
-  an integration test when MangaLoft adopts.
+  strings; the override survives MangaLoft's serialize path only through
+  **`PorticoNotation`** (PR-3 switched the clipboard/serialization seams off the
+  Aozora path, which cannot carry TCY). Verify with an integration test when
+  MangaLoft adopts.
 
 ## Slices (Portico 0.6.0)
 
@@ -243,3 +244,34 @@ Aozora path to `PorticoNotation` (closes the paste-adjacent same-box
 coalescing hazard by construction — parse mints a fresh box per command), and
 add the direct pin: copy a combined span, paste adjacent, expect two distinct
 cells.
+
+## PR-3 record (2026-07-04)
+
+Built per the locked scope + the fold-round rulings:
+
+- **Menu seam → provider** — `PorticoSelectionMenuProvider = (NSRange) ->
+  [PorticoSelectionMenuAction]`, evaluated at menu-open (macOS context menu items
+  carry their index in `representedObject`; a bare responder-chain send invokes the
+  FIRST action — Ruby… in the Example; iOS maps actions into the edit menu inline
+  group). Single-action `onSelectionMenuAction:` inits wrap into a one-element
+  provider.
+- **Engine toggle API** — `tateChuYokoToggle(for:)` (`.apply`/`.release`; release
+  iff the whole range already renders 縦中横; mixed = APPLY-WINS) and
+  `performTateChuYokoToggle(for:)` (apply = one combine span, surgery removes
+  suppress; release = clear explicit overrides, then SUPPRESS auto groups still
+  intersecting — full atomic ranges, one undo step; a cleared pure combine stores no
+  unnecessary suppress).
+- **Clipboard → owned notation** — `serializedSelection`/`insertNotation` switched
+  from Aozora to `PorticoNotation`; paste-adjacent-distinct-cells pinned (fresh box
+  per parsed command closes the coalescing hazard by construction).
+- **Aozora posture (owner ruling)** — live `《》` typing conversion is now behind
+  `importsAozoraRubyWhileTyping`, DEFAULT OFF; the PASTE boundary imports Aozora
+  regardless (`PorticoRuby.importAozora(in:)` layered after the owned-grammar
+  parse). The Example opts into typing conversion; MangaLoft opts in until it grows
+  a ruby menu. Known misfire while enabled (and on paste): `《》` is legitimate
+  title punctuation (《吾輩は猫である》), so kanji + title can convert to surprise
+  ruby — undo reverses in one step; if an operator complains, the pre-made fix is a
+  host preference, not removal.
+- **Example** — both menu entries on both platforms; demo text gained a TCY line
+  (平成12年3月10日、第158刷。まさか!?); ⇧⌘T main-menu toggle (macOS) reads its
+  title from the bridged engine at menu-open.

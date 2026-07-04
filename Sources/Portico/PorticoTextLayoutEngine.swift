@@ -560,8 +560,19 @@ public class PorticoTextLayoutEngine {
 		// Inline notation (§7a): a just-typed `》` closing `…《reading》` converts to a ruby group —
 		// as a SEPARATE undo step (see applyInlineRubyConversion), so undo returns to the literal
 		// characters first. Guarded internally to only fire when a run actually closes.
-		applyInlineRubyConversion()
+		// Gated OFF by default since 0.6.0 (owner ruling): Aozora import happens at explicit
+		// boundaries (paste, `parse(aozora:)`), not during default typing.
+		if importsAozoraRubyWhileTyping { applyInlineRubyConversion() }
 	}
+
+	/// Opt-in live Aozora conversion while typing: a just-typed `》` closing `[｜]base《reading》`
+	/// converts to a ruby group (own undo step — always escapable). Default `false` (0.6.0 owner
+	/// ruling): the owned notation is `PorticoNotation`; Aozora is a one-way import that fires at
+	/// explicit boundaries (paste, `parse(aozora:)`). Hosts whose only ruby input is inline typing
+	/// (e.g. MangaLoft until it grows a ruby menu) opt in deliberately.
+	/// Known misfire when enabled: `《》` is legitimate punctuation for titles (《吾輩は猫である》),
+	/// so a title typed right after kanji converts to surprise ruby; undo reverses it in one step.
+	public var importsAozoraRubyWhileTyping = false
 
 	// MARK: - Clipboard round-trip (backs macOS copy/cut/paste)
 	// Ruby survives copy/paste by going through Aozora notation: Copy serializes the selection,
@@ -627,6 +638,65 @@ public class PorticoTextLayoutEngine {
 		updateLayout()
 	}
 
+	/// The state-dependent menu verb for `range`, evaluated AT MENU-OPEN TIME
+	/// (0.6.0 PR-3): `.release` ("縦中横を解除") when the whole range already
+	/// renders inside 縦中横 cells; `.apply` ("縦中横") otherwise — a MIXED
+	/// selection resolves APPLY-WINS (design OQ-A, the bold-editor convention).
+	public enum TateChuYokoToggle { case apply, release }
+	public func tateChuYokoToggle(for range: NSRange) -> TateChuYokoToggle {
+		guard range.length > 0, NSMaxRange(range) <= attributedString.length else { return .apply }
+		var covered = 0
+		for group in PorticoTateChuYoko.effectiveGroups(in: attributedString) {
+			covered += NSIntersectionRange(group, range).length
+		}
+		return covered == range.length ? .release : .apply
+	}
+
+	/// Perform the toggle `tateChuYokoToggle(for:)` names. Apply normalizes the
+	/// whole selection into ONE combine span (surgery clears any suppress —
+	/// "縦中横 on a suppressed range removes the suppress", never a
+	/// suppress-still-wins surprise). Release makes the selection stop
+	/// rendering 縦中横: explicit overrides intersecting it are cleared, and
+	/// automatic groups still intersecting it after that are SUPPRESSED
+	/// (their full atomic ranges) — one undo step either way.
+	public func performTateChuYokoToggle(for range: NSRange) {
+		guard range.length > 0, NSMaxRange(range) <= attributedString.length else { return }
+		switch tateChuYokoToggle(for: range) {
+		case .apply:
+			setTateChuYoko(.combine, for: range)
+		case .release:
+			releaseTateChuYoko(in: range)
+		}
+	}
+
+	private func releaseTateChuYoko(in range: NSRange) {
+		let mutableString = NSMutableAttributedString(attributedString: attributedString)
+		var touched = false
+		mutableString.enumerateAttribute(
+			PorticoTateChuYoko.overrideKey,
+			in: NSRange(location: 0, length: mutableString.length)
+		) { value, spanRange, _ in
+			guard value != nil, NSIntersectionRange(spanRange, range).length > 0 else { return }
+			mutableString.removeAttribute(PorticoTateChuYoko.overrideKey, range: spanRange)
+			touched = true
+		}
+		// What still renders 縦中横 here is automatic — suppress it. (A cleared
+		// 3+-length combine has no auto group underneath, so clearing sufficed.)
+		for group in PorticoTateChuYoko.effectiveGroups(in: mutableString)
+		where NSIntersectionRange(group, range).length > 0 {
+			mutableString.addAttribute(
+				PorticoTateChuYoko.overrideKey,
+				value: PorticoTateChuYoko.Override(.suppress),
+				range: group)
+			touched = true
+		}
+		guard touched else { return }
+		beginUndoStep()
+		attributedString = mutableString
+		textDidChange?(attributedString)
+		updateLayout()
+	}
+
 	/// The 縦中横 override covering `index`, if any — the menu-title seam
 	/// (state-dependent toggle) and tests read this.
 	public func tateChuYokoOverride(at index: Int) -> PorticoTateChuYoko.Override.Kind? {
@@ -636,16 +706,23 @@ public class PorticoTextLayoutEngine {
 		return (value as? PorticoTateChuYoko.Override)?.kind
 	}
 
-	/// The current selection serialized to Aozora notation (ruby preserved), or nil if there is no
-	/// non-empty selection. Plain text serializes to itself (no marks).
+	/// The current selection serialized to the OWNED notation (`PorticoNotation` — ruby and
+	/// 縦中横 overrides preserved), or nil if there is no non-empty selection. Plain text
+	/// serializes to itself (no marks). Switched from the Aozora path in 0.6.0 PR-3: parse
+	/// mints a fresh identity box per tcy command, so copy/paste-adjacent yields DISTINCT
+	/// cells by construction (the review's paste-coalescing hazard).
 	func serializedSelection() -> String? {
 		guard let sr = selectionRange, sr.length > 0 else { return nil }
-		return PorticoRuby.serialize(attributedString.attributedSubstring(from: sr))
+		return PorticoNotation.serialize(attributedString.attributedSubstring(from: sr))
 	}
 
-	/// Parse Aozora notation and insert it at the current target range (replacing any selection),
-	/// giving the pasted text the insertion context's base attributes (font/colour) while keeping
-	/// its parsed ruby annotations. Plain pasted text (no `《》`) inserts as plain text.
+	/// Parse notation and insert it at the current target range (replacing any selection),
+	/// giving the pasted text the insertion context's base attributes (font/colour) while
+	/// keeping its parsed annotations. Two layers, both one-way into the model:
+	/// 1. the OWNED grammar (`[[ruby:…]]`/`[[tcy:…]]` — internal copy/paste round-trip);
+	/// 2. an Aozora import pass over the remaining plain text (`漢字《かんじ》` pasted from an
+	///    external manuscript) — the PASTE boundary is an explicit import boundary (owner
+	///    ruling 2026-07-04), unlike default typing.
 	func insertNotation(_ notation: String) {
 		beginUndoStep() // paste is one discrete undo step
 		let pasteTarget = markedRange ?? selectionRange ?? NSRange(location: cursorIndex, length: 0)
@@ -654,7 +731,10 @@ public class PorticoTextLayoutEngine {
 		contextAttrs.removeValue(forKey: PorticoRuby.rubyKey)
 		// Pasted notation carries its own annotations; never inherit an override from the context.
 		contextAttrs.removeValue(forKey: PorticoTateChuYoko.overrideKey)
-		insertAttributedText(PorticoRuby.parse(notation, attributes: contextAttrs))
+		let parsed = NSMutableAttributedString(
+			attributedString: PorticoNotation.parse(notation, attributes: contextAttrs))
+		PorticoRuby.importAozora(in: parsed)
+		insertAttributedText(parsed)
 	}
 
 	/// Replace the current target range (marked ▸ selection ▸ caret) with `attributed`, preserving

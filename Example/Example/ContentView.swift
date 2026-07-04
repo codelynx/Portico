@@ -18,6 +18,7 @@ struct ContentView: View {
 	@State private var engine = PorticoTextLayoutEngine(attributedString: PorticoRuby.parse("""
 		吾輩《わがはい》は猫《ねこ》である。名前《なまえ》はまだ無《な》い。
 		どこで生《う》れたかとんと見当《けんとう》がつかぬ。何《なに》でも薄暗《うすぐら》いじめじめした所《ところ》でニャーニャー泣《な》いていた事《こと》だけは記憶《きおく》している。吾輩はここで始《はじ》めて人間《にんげん》というものを見た。
+		発行は平成12年3月10日、第158刷。まさか!?
 
 		I am a cat. As yet I have no name. I have not the faintest idea where I was born. All I remember is that I was mewing in a damp, gloomy place — and it was there, for the first time, that I set eyes on a human being.
 		"""))
@@ -77,12 +78,24 @@ struct ContentView: View {
 				}
 			}
 
-			// engine: mode. Select any text → native edit action (Ruby…) → this popover; applying
-			// calls engine.setRuby, which is one undoable step. (Inline notation — typing 漢字《かんじ》
-			// — also works directly in the view. Typing, delete, paste, cut, and ruby are all undoable.)
+			// engine: mode. Select any text → native edit menu → Ruby… opens this popover (one
+			// undoable engine.setRuby step) or 縦中横 toggles the selection (0.6.0: the provider is
+			// evaluated at menu-open, so the title reads 縦中横／縦中横を解除 from current state;
+			// try it in Vertical on "12" / "158" / "!?"). Typing 漢字《かんじ》 also converts live —
+			// the demo opts in below (default is off; paste always imports 《》).
 			PorticoView(engine: engine, orientation: orientation,
-						onSelectionMenuAction: PorticoSelectionMenuAction(title: "Ruby…") { range, anchor in
-							beginEditing(range: range, anchor: anchor)
+						selectionMenuActions: { range in
+							[
+								PorticoSelectionMenuAction(title: "Ruby…") { range, anchor in
+									beginEditing(range: range, anchor: anchor)
+								},
+								PorticoSelectionMenuAction(
+									title: engine.tateChuYokoToggle(for: range) == .release
+										? "縦中横を解除" : "縦中横"
+								) { range, _ in
+									engine.performTateChuYokoToggle(for: range)
+								},
+							]
 						})
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 				.background(Color(white: 0.85)) // shows off the white outline halo
@@ -106,6 +119,9 @@ struct ContentView: View {
 			// Client observation seam (distinct from the view's internal repaint slot):
 			// keep the measurement readout live as the user types.
 			engine.textDidChange = { _ in refreshMeasured() }
+			// The demo opts into live Aozora typing (default off since 0.6.0 — the owned
+			// notation is [[…]]; paste imports 《》 regardless of this flag).
+			engine.importsAozoraRubyWhileTyping = true
 			refreshMeasured()
 		}
 		// The engine isn't Observable (by design), but its UndoManager broadcasts state. Refresh the
