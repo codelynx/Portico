@@ -133,6 +133,21 @@ enum PorticoTateChuYoko {
 			if !suppressionDisabledForTesting {
 				layoutString.addAttribute(
 					.foregroundColor, value: CGColor(gray: 0, alpha: 0), range: group)
+				// Shrink the hidden originals to a SUB-PIXEL font (layout copy
+				// only, AFTER the cell metrics were computed from the real
+				// size): their glyph paths collapse to ~0.01pt, so the
+				// ink/path unions exclude them structurally — no second
+				// coordinate space, no per-run recomputation. Delegate
+				// metrics are font-independent; line metrics come from the
+				// delegates' cross extents.
+				let hidden: CTFont
+				if let value = layoutString.attribute(.font, at: group.location, effectiveRange: nil),
+				   CFGetTypeID(value as CFTypeRef) == CTFontGetTypeID() {
+					hidden = CTFontCreateCopyWithAttributes(value as! CTFont, 0.01, nil, nil)
+				} else {
+					hidden = CTFontCreateWithName("Helvetica" as CFString, 0.01, nil)
+				}
+				layoutString.addAttribute(.font, value: hidden, range: group)
 			}
 		}
 	}

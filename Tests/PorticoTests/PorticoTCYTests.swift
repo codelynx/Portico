@@ -345,9 +345,10 @@ private func inkedBBox(_ engine: PorticoTextLayoutEngine, band: ClosedRange<CGFl
 // MARK: - Review-fold additions (tight ink, causal A/B, uncompressed, foreign ruby)
 
 @Test @MainActor func inkBoundsTightAgainstPaintedPixels() {
-	// Not just containment: with hidden-original glyph bounds EXCLUDED from
-	// the base union, inkBounds must hug the painted pixels (review fold —
-	// over-report was the bloated-selection-frame failure mode).
+	// Tightness on mixed content: hidden originals are sub-pixel-shrunk on
+	// the layout copy, so inkBounds must hug painted pixels. If a future
+	// font/CT version resurrects the hidden paths, THIS fails and names
+	// the cause.
 	let engine = tcyEngine("あ12う")
 	let ink = engine.inkBounds()
 	let flipped = CGRect(
@@ -359,9 +360,38 @@ private func inkedBBox(_ engine: PorticoTextLayoutEngine, band: ClosedRange<CGFl
 	        "tightness: inkBounds (\(flipped)) hugs pixels (\(bbox))")
 }
 
+@Test @MainActor func groupOnlyInkBoundsTightNonCircular() {
+	// The NON-CIRCULAR form (fold-verification round): group-only content,
+	// inkBounds vs PAINTED PIXELS directly. Two sizes — this test is what
+	// FALSIFIED the quantified-4pt-overreport deviation (path slack scaled
+	// with font size) and motivated the sub-pixel-shrink structural fix.
+	// Plain and outlined.
+	for fontSize: CGFloat in [14, 36] {
+		let font = CTFontCreateWithName("HiraMinProN-W3" as CFString, fontSize, nil)
+		for outlined in [false, true] {
+			let engine = PorticoTextLayoutEngine(
+				attributedString: NSAttributedString(string: "12", attributes: [.font: font]),
+				orientation: .vertical, bounds: .zero)
+			if outlined {
+				engine.outline = PorticoTextOutline(width: 2, color: CGColor(gray: 0, alpha: 1))
+			}
+			engine.update(bounds: engine.measuredSize())
+			let ink = engine.inkBounds()
+			let flipped = CGRect(
+				x: ink.minX, y: engine.bounds.height - ink.maxY,
+				width: ink.width, height: ink.height)
+			let bbox = inkedBBox(engine)
+			#expect(flipped.insetBy(dx: -1.5, dy: -1.5).contains(bbox),
+			        "\(fontSize)pt outlined=\(outlined): containment")
+			#expect(flipped.width - bbox.width <= 4 && flipped.height - bbox.height <= 4,
+			        "\(fontSize)pt outlined=\(outlined): inkBounds (\(flipped)) vs pixels (\(bbox))")
+		}
+	}
+}
+
 @Test @MainActor func noInkOutsideMiniLineBBoxForGroupOnlyContent() {
-	// Stricter suppression gate (review fold): a group-only engine has NO
-	// alpha outside the mini-line's own bbox + AA slop.
+	// Stray-ink gate: a group-only engine has NO alpha outside the reported
+	// ink + slop.
 	let engine = tcyEngine("12")
 	let full = inkedBBox(engine)
 	let ink = engine.inkBounds()

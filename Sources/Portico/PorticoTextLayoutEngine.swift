@@ -1365,17 +1365,16 @@ public class PorticoTextLayoutEngine {
 		var union = CGRect.null
 		for (line, origin) in zip(lines, origins) {
 			var local = CTLineGetBoundsWithOptions(line, [.useGlyphPathBounds])
-			// 縦中横 (review fold): suppression hides the original glyphs'
-			// PAINT but not their glyph-PATH bounds — a group-intersecting
-			// line's whole-line bounds would over-report around the cell
-			// (bloated selection/export tiles). Recompute such lines from
-			// NON-marker runs only; the mini-line union below supplies the
-			// group's real ink.
-			// (Review fold follow-up: a per-run non-marker recomputation was
-			// attempted and REVERTED — CTRunGetImageBounds returns rotated
-			// run-space bounds for vertical runs, a second coordinate space
-			// this file deliberately avoids. The hidden originals' path
-			// bounds are bounded by the tightness pin below instead.)
+			// 縦中横 ink: hidden originals contribute ~NOTHING here — the
+			// suppression shrinks them to a sub-pixel font on the layout copy
+			// (their paths collapse), so whole-line bounds stay tight without
+			// any per-run recomputation. (History: a CTRunGetImageBounds
+			// exclusion was tried and reverted — rotated run-space trap; a
+			// quantified 4pt over-report pin was tried and FAILED at 36pt —
+			// path slack scales with font size. The sub-pixel shrink is the
+			// structural fix with no second coordinate space.) Tightness is
+			// pinned non-circularly at two sizes, plain + outlined. The
+			// mini-line union below supplies the group's real ink.
 			// Empty lines (e.g. "\n\n") yield null/empty glyph bounds — skip, or the
 			// union degrades. (A group-ONLY line lands here too: its ink is
 			// exclusively the mini-line, unioned after this loop.)
