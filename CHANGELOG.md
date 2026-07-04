@@ -2,6 +2,36 @@
 
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
+## [0.5.0] - 2026-07-04
+### Added — 縦中横 (tate-chū-yoko), the automatic upright-in-vertical rule
+Slice 4 of the manga-lettering arc (MangaLoft text objects v1 ship gate). Scope pinned at
+the client's kickoff lock: **exactly-two half-width digits** not adjacent to another digit,
+and **isolated half-width !?-family pairs** — rendered upright in one column cell. NO
+markup, NO persistence change, NO host API: a pure detection rule re-derived from the text
+on every relayout (CSS `text-combine-upright: digits 2` posture). Ruby-annotated ranges are
+excluded (ruby wins). Explicitly NOT grouped: 3+-digit runs, Latin runs, full-width forms,
+single-codepoint ‼⁇⁈⁉, anything horizontal.
+
+- Groups measure, wrap, and line-break as ONE character cell; the extra-line-fragment and
+  pitch behaviors compose unchanged.
+- Fill AND outline (縁取り) render the upright pair; when a pair exceeds the column width
+  the glyphs compress horizontally while the rim keeps its absolute artist-facing width.
+- `inkBounds()` stays glyph-tight around groups (pinned at two sizes, plain + outlined).
+- Editing: groups form/dissolve purely by re-detection (typing, backspace, paste, undo,
+  setRuby all correct by construction); selection rects show the WHOLE cell for any
+  intersecting range (visual only — the stored range stays per-character); a tap inside a
+  cell snaps to the nearer boundary; the caret BETWEEN the pair's characters renders as a
+  vertical bar in the group's local inline direction (device-witnessed); `wordRange(at:)`
+  returns the group for probes inside it (double-click selects the pair); vertical
+  column-hop navigation probes by column pitch (caret-shape-independent).
+- Wrap-split is unreachable by construction for inline extents ≥ one character cell.
+
+### Internal (NOT contract — hosts must not depend on layout-copy contents)
+The mechanism lives entirely in the per-layout throwaway copy: `CTRunDelegate` cell
+reservation (per-glyph advances), marker attributes, clear-fill + sub-pixel-font glyph
+suppression, and same-length line-break stand-ins. The backing store, serialization,
+typing inheritance, and every string-returning API never see any of it (leak-gated).
+
 ## [0.4.2] - 2026-07-04
 Patch-class fixes to the shipped editing surface, all found by MangaLoft's slice-3 editor
 integration + device gauntlet (real IME, Mac + iPadOS 26).
