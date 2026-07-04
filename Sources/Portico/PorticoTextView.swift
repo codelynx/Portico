@@ -16,6 +16,18 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 	/// `PorticoView(onSelectionMenuAction:)`.
 	public var selectionMenuProvider: PorticoSelectionMenuProvider?
 
+	/// Portico's private pasteboard type: owned notation that pastes as IDENTITY (no Aozora
+	/// import). External apps read the plain-string type written alongside it.
+	public static let notationPasteboardType = NSPasteboard.PasteboardType("com.electricwoods.portico.notation")
+
+	/// Boxes a menu action into `NSMenuItem.representedObject` at menu-open, so invocation runs
+	/// EXACTLY the action the user saw (release review: index-based re-dispatch could invoke a
+	/// different action if the provider's output changed between open and click).
+	private final class MenuActionBox: NSObject {
+		let action: PorticoSelectionMenuAction
+		init(_ action: PorticoSelectionMenuAction) { self.action = action }
+	}
+
 	public init(frame: NSRect, layoutEngine: PorticoTextLayoutEngine) {
 		self.layoutEngine = layoutEngine
 		super.init(frame: frame)
@@ -151,11 +163,11 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 		   let selection = layoutEngine.selectionRange, selection.length > 0 {
 			let actions = provider(selection) // menu-open evaluation: titles reflect state NOW
 			if !actions.isEmpty { menu.addItem(.separator()) }
-			for (index, action) in actions.enumerated() {
+			for action in actions {
 				let item = NSMenuItem(title: action.title,
 									  action: #selector(performSelectionMenuAction(_:)), keyEquivalent: "")
 				item.target = self
-				item.representedObject = index
+				item.representedObject = MenuActionBox(action) // capture: invoke what was SHOWN
 				menu.addItem(item)
 			}
 		}
@@ -163,25 +175,36 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 	}
 
 	/// Target of both the context-menu items and any app main-menu command (e.g. `Edit ▸ Ruby…`)
-	/// wired to this selector via the responder chain. Re-evaluates the provider and re-reads the
-	/// selection at invocation time. Context items carry their action index in
-	/// `representedObject`; a bare responder-chain send (no index) invokes the FIRST action —
+	/// wired to this selector via the responder chain. Context items carry their CAPTURED action
+	/// in `representedObject` (invoke what was shown, even if the provider's output has since
+	/// changed — iOS captures the same way); selection + anchor are re-read at invocation. A bare
+	/// responder-chain send (no captured action) invokes the provider's FIRST current action —
 	/// main-menu commands wanting a specific action should drive the engine API directly instead.
 	@objc public func performSelectionMenuAction(_ sender: Any?) {
 		guard let provider = selectionMenuProvider,
 			  let selection = layoutEngine.selectionRange, selection.length > 0,
 			  let anchor = layoutEngine.anchorRectForSelection() else { return }
-		let actions = provider(selection)
-		let index = ((sender as? NSMenuItem)?.representedObject as? Int) ?? 0
-		guard actions.indices.contains(index) else { return }
-		actions[index].handler(selection, anchor)
+		let action: PorticoSelectionMenuAction
+		if let boxed = (sender as? NSMenuItem)?.representedObject as? MenuActionBox {
+			action = boxed.action
+		} else if let first = provider(selection).first {
+			action = first
+		} else {
+			return
+		}
+		action.handler(selection, anchor)
 	}
 
-	/// Copy the selection to the pasteboard as Aozora notation, so ruby survives copy/paste.
+	/// Copy the selection to the pasteboard as OWNED notation (`PorticoNotation`), so ruby and
+	/// 縦中横 overrides survive copy/paste. Written under TWO types: the plain string (what
+	/// external apps see) and Portico's private type — paste prefers the private type and skips
+	/// the Aozora import for it, so internal copy/paste is IDENTITY (literal `《》` a user typed
+	/// stays literal; the import runs only for external plain text).
 	@objc public func copy(_ sender: Any?) {
 		guard let notation = layoutEngine.serializedSelection() else { return }
 		NSPasteboard.general.clearContents()
 		NSPasteboard.general.setString(notation, forType: .string)
+		NSPasteboard.general.setString(notation, forType: PorticoTextView.notationPasteboardType)
 	}
 
 	@objc public func cut(_ sender: Any?) {
@@ -192,8 +215,13 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 	}
 
 	@objc public func paste(_ sender: Any?) {
-		guard let string = NSPasteboard.general.string(forType: .string) else { return }
-		layoutEngine.insertNotation(string) // parses notation → ruby round-trips
+		if let owned = NSPasteboard.general.string(forType: PorticoTextView.notationPasteboardType) {
+			layoutEngine.insertNotation(owned, importingAozora: false) // internal: identity
+		} else if let string = NSPasteboard.general.string(forType: .string) {
+			layoutEngine.insertNotation(string) // external: owned grammar + Aozora import
+		} else {
+			return
+		}
 		setNeedsDisplay(bounds)
 	}
 
@@ -484,10 +512,14 @@ public class PorticoTextView: UIView, UITextInput {
 		}
 	}
 
+	/// Portico's private pasteboard type (same UTI as macOS): owned notation that pastes as
+	/// IDENTITY (no Aozora import). External apps read the plain string written alongside it.
+	static let notationPasteboardType = "com.electricwoods.portico.notation"
+
 	// MARK: - Clipboard (UIResponderStandardEditActions)
 	// UITextInteraction gates edit-menu items on canPerformAction + the responder implementing the
-	// action; it doesn't supply Cut/Copy/Paste itself. Copy uses Aozora notation (like macOS), so
-	// ruby round-trips copy/paste on iOS too.
+	// action; it doesn't supply Cut/Copy/Paste itself. Copy uses the OWNED notation (like macOS),
+	// so ruby and 縦中横 overrides round-trip copy/paste on iOS too.
 	public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
 		let hasSelection = (layoutEngine.selectionRange?.length ?? 0) > 0
 		switch action {
@@ -504,7 +536,11 @@ public class PorticoTextView: UIView, UITextInput {
 
 	public override func copy(_ sender: Any?) {
 		guard let notation = layoutEngine.serializedSelection() else { return }
-		UIPasteboard.general.string = notation
+		guard let data = notation.data(using: .utf8) else { return }
+		UIPasteboard.general.setItems([[
+			"public.utf8-plain-text": notation,
+			PorticoTextView.notationPasteboardType: data, // marks Portico-originated content
+		]])
 	}
 
 	public override func cut(_ sender: Any?) {
@@ -514,9 +550,12 @@ public class PorticoTextView: UIView, UITextInput {
 	}
 
 	public override func paste(_ sender: Any?) {
-		guard let string = UIPasteboard.general.string else { return }
+		let owned = UIPasteboard.general.data(forPasteboardType: PorticoTextView.notationPasteboardType)
+			.flatMap { String(data: $0, encoding: .utf8) }
+		guard let string = owned ?? UIPasteboard.general.string else { return }
 		mutatingText(replacedSelection: (layoutEngine.selectionRange?.length ?? 0) > 0) {
-			layoutEngine.insertNotation(string) // parses notation → ruby round-trips
+			// Internal (owned type present): identity — no Aozora import. External: import 《》.
+			layoutEngine.insertNotation(string, importingAozora: owned == nil)
 		}
 	}
 

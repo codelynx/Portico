@@ -582,8 +582,9 @@ public class PorticoTextLayoutEngine {
 	public var importsAozoraRubyWhileTyping = false
 
 	// MARK: - Clipboard round-trip (backs macOS copy/cut/paste)
-	// Ruby survives copy/paste by going through Aozora notation: Copy serializes the selection,
-	// Paste parses it back. See Docs/RubyEditing-Design.md §7.2.
+	// Ruby and 縦中横 overrides survive copy/paste through the OWNED notation (PorticoNotation):
+	// Copy serializes the selection, Paste parses it back — identity for Portico-originated
+	// content; external plain text additionally gets the one-way Aozora import.
 
 	/// Set / edit / remove the ruby reading over `range` as **one undo step** (nil, empty, or
 	/// whitespace-only removes it). The base text is unchanged, so the caret/selection are
@@ -741,10 +742,14 @@ public class PorticoTextLayoutEngine {
 	/// giving the pasted text the insertion context's base attributes (font/colour) while
 	/// keeping its parsed annotations. Two layers, both one-way into the model:
 	/// 1. the OWNED grammar (`[[ruby:…]]`/`[[tcy:…]]` — internal copy/paste round-trip);
-	/// 2. an Aozora import pass over the remaining plain text (`漢字《かんじ》` pasted from an
-	///    external manuscript) — the PASTE boundary is an explicit import boundary (owner
-	///    ruling 2026-07-04), unlike default typing.
-	func insertNotation(_ notation: String) {
+	/// 2. with `importingAozora`, an Aozora pass over the remaining PLAIN segments
+	///    (`漢字《かんじ》` pasted from an external manuscript) — the paste boundary is an
+	///    explicit import boundary (owner ruling 2026-07-04), unlike default typing.
+	/// The view layer passes `importingAozora: false` for Portico-originated pasteboard
+	/// content (release-review blocker: internal copy/paste must be IDENTITY — literal
+	/// `《》` a user typed must not turn into ruby on the way back in); the Aozora pass runs
+	/// only for external plain text.
+	func insertNotation(_ notation: String, importingAozora: Bool = true) {
 		beginUndoStep() // paste is one discrete undo step
 		let pasteTarget = markedRange ?? selectionRange ?? NSRange(location: cursorIndex, length: 0)
 		var contextAttrs = inheritedAttributes(at: pasteTarget, in: attributedString)
@@ -754,7 +759,7 @@ public class PorticoTextLayoutEngine {
 		contextAttrs.removeValue(forKey: PorticoTateChuYoko.overrideKey)
 		let parsed = NSMutableAttributedString(
 			attributedString: PorticoNotation.parse(notation, attributes: contextAttrs))
-		PorticoRuby.importAozora(in: parsed)
+		if importingAozora { PorticoRuby.importAozora(in: parsed) }
 		insertAttributedText(parsed)
 	}
 
@@ -1394,7 +1399,7 @@ public class PorticoTextLayoutEngine {
 			mutableString.addAttribute(.verticalGlyphForm, value: true, range: fullRange)
 			// 縦中横 (slice 4): reserve one column cell per auto-detected group
 			// — on the LAYOUT COPY only (the backing store never carries the
-			// delegate/marker; typing inheritance and Aozora serialization
+			// delegate/marker; typing inheritance and notation serialization
 			// stay clean by construction).
 			PorticoTateChuYoko.applyReservations(to: mutableString)
 		}

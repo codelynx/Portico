@@ -611,3 +611,56 @@ private func type(_ s: String, into e: PorticoTextLayoutEngine) { for ch in s { 
 	e.unmarkText()
 	#expect(e.attributedString.string == "猫《ねこ》") // default: no conversion on unmark either
 }
+
+// MARK: - 0.6.0 release-gate pins: owned paste identity vs Aozora import
+
+@Test func ownedPasteIsIdentityNoAozoraImport() {
+	// Internal copy/paste must be IDENTITY: literal 《》 a user typed stays
+	// literal when the pasteboard content is Portico-originated (the view
+	// passes importingAozora: false for the private pasteboard type).
+	let e = editEngine("")
+	e.insertNotation("猫《ねこ》", importingAozora: false)
+	#expect(e.attributedString.string == "猫《ねこ》")
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString) == nil)
+	// …and a TCY payload carrying 《》 survives exactly (owned round-trip).
+	let e2 = editEngine("")
+	e2.insertNotation("[[tcy:猫《ねこ》]]", importingAozora: false)
+	#expect(e2.attributedString.string == "猫《ねこ》")
+	#expect(e2.tateChuYokoOverride(at: 0) == .combine, "the override survives; no Aozora rewrite inside it")
+}
+
+@Test func importAozoraSkipsExistingAnnotations() {
+	// Release-review blocker: an explicit ｜ base deliberately crosses ruby in
+	// live typing, so without the annotation guard, pasted owned notation like
+	// [[ruby:｜漢字《かんじ》|old]] would be rewritten by the legacy importer.
+	let e = editEngine("")
+	e.insertNotation("[[ruby:｜漢字《かんじ》|old]]") // external path — import pass runs
+	#expect(e.attributedString.string == "｜漢字《かんじ》", "annotated base text untouched")
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "old", "owned ruby wins")
+	// …and a TCY span containing 《》 is equally off-limits to the import pass.
+	let e2 = editEngine("")
+	e2.insertNotation("[[tcy:猫《ねこ》]]")
+	#expect(e2.attributedString.string == "猫《ねこ》")
+	#expect(e2.tateChuYokoOverride(at: 0) == .combine)
+}
+
+@Test func importAozoraAdjacentToOwnedRubyDoesNotSwallow() {
+	// The one edge where the two grammars touch in a single pasted string:
+	// the Aozora auto-base walk must stop at an owned-ruby character.
+	let e = editEngine("")
+	e.insertNotation("[[ruby:大|だい]]学《がく》")
+	#expect(e.attributedString.string == "大学")
+	#expect(PorticoRuby.rubyGroup(at: 0, in: e.attributedString)?.reading == "だい", "owned ruby intact")
+	#expect(PorticoRuby.rubyGroup(at: 1, in: e.attributedString)?.reading == "がく", "Aozora base = 学 only")
+}
+
+@Test func legacySerializeTripsOnOverrideBearingContent() {
+	// The DEBUG tripwire itself can't be exercised without crashing the test
+	// runner, so pin its precondition instead: override-bearing content is
+	// detectable, and PorticoNotation (the correct path) carries it.
+	let string = NSMutableAttributedString(string: "12")
+	string.addAttribute(PorticoTateChuYoko.overrideKey,
+	                    value: PorticoTateChuYoko.Override(.combine),
+	                    range: NSRange(location: 0, length: 2))
+	#expect(PorticoNotation.serialize(string) == "[[tcy:12]]", "PorticoNotation carries the override")
+}

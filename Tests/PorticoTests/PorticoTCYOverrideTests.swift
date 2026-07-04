@@ -328,3 +328,14 @@ private func cells(_ engine: PorticoTextLayoutEngine) -> CGFloat {
 	        == [NSRange(location: 0, length: 3)], "snapped to 月10 as one cell")
 	#expect(engine.tateChuYokoOverride(at: 2) == .combine, "the 0 rode along")
 }
+
+@Test @MainActor func applySnapsAcrossMultipleGroupsAndPlainText() {
+	// Release-gate pin: the multi-group stretch is INTENDED, not incidental —
+	// the highlight already painted both cells and the text between as
+	// selected with the title reading 縦中横, so apply combines the whole
+	// highlighted stretch (WYSIWYG holding, per-reviewer argument).
+	let engine = ovEngine("12あ34")
+	engine.performTateChuYokoToggle(for: NSRange(location: 1, length: 3)) // 2あ3 — clips both pairs
+	#expect(PorticoTateChuYoko.effectiveGroups(in: engine.attributedString)
+	        == [NSRange(location: 0, length: 5)], "one combine spanning the whole highlight")
+}

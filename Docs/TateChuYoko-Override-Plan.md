@@ -275,3 +275,35 @@ Built per the locked scope + the fold-round rulings:
 - **Example** — both menu entries on both platforms; demo text gained a TCY line
   (平成12年3月10日、第158刷。まさか!?); ⇧⌘T main-menu toggle (macOS) reads its
   title from the bridged engine at menu-open.
+
+## Release-gate review fold (2026-07-04, three reviewers — pre-0.6.0-tag)
+
+Witness folds (snap `7b3c34e`, unmark `f5a0d7d`) approved by all three. Blockers fixed:
+
+- **Owned paste vs Aozora import separated (blocker ×2)** — Portico-originated
+  pasteboard content now travels under a private type
+  (`com.electricwoods.portico.notation`, written alongside the plain string) and
+  pastes with `importingAozora: false`: internal copy/paste is IDENTITY (literal
+  `《》` stays literal; `[[tcy:猫《ねこ》]]` survives exactly). The Aozora pass runs
+  only for external plain text.
+- **`importAozora` annotation guard (blocker)** — a match whose source range
+  intersects an existing annotation (ruby or override — anything the owned parse
+  just authored) is skipped; the explicit-`｜`-crosses-ruby rule is right for live
+  typing but was wrong at the paste boundary (`[[ruby:｜漢字《かんじ》|old]]` pinned).
+  Adjacency pinned too: the auto-base walk stops at owned ruby
+  (`[[ruby:大|だい]]学《がく》` → 学 only).
+- **macOS dispatch captures the action** — menu items box the
+  `PorticoSelectionMenuAction` in `representedObject` at menu-open (iOS parity):
+  invocation runs exactly what the user SAW, immune to provider-output changes
+  between open and click. Bare responder-chain send still = first current action.
+- **`PorticoRuby.serialize` data-loss tripwire** — DEBUG assert when the content
+  carries a 縦中横 override, pointing at `PorticoNotation`; fires the day a host
+  (MangaLoft) wires TCY authoring without switching its commit path.
+- **Multi-group snap pinned as intended** — `12あ34` select `2あ3` → one combine
+  over the whole highlighted stretch (WYSIWYG holding: the highlight painted it
+  all, the title read apply).
+- Stale "clipboard = Aozora" comments swept.
+
+Drain note (reviewer-verified, by construction): MangaLoft's save-drain finalizes
+via `unmarkText`, so a drain mid-`《ねこ》` composition now converts THEN commits —
+identical to what typing would have produced.
