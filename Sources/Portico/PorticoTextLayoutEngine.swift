@@ -423,8 +423,13 @@ public class PorticoTextLayoutEngine {
 			if orientation == .horizontal {
 				return max(0, from - 1)
 			} else {
+				// Probe by the COLUMN PITCH, not the caret rect's width — the
+				// 縦中横 interior caret is a 2pt vertical bar (local inline
+				// direction), and a width-based probe from it would land in
+				// the SAME column (slice-4 review catch). Pitch is the
+				// column-to-column distance by definition, shape-independent.
 				let rect = caretRect(for: from)
-				let point = CGPoint(x: rect.midX - rect.width, y: rect.midY)
+				let point = CGPoint(x: rect.midX - effectiveLinePitch, y: rect.midY)
 				return stringIndex(for: point)
 			}
 		case .right:
@@ -432,7 +437,7 @@ public class PorticoTextLayoutEngine {
 				return min(attributedString.length, from + 1)
 			} else {
 				let rect = caretRect(for: from)
-				let point = CGPoint(x: rect.midX + rect.width, y: rect.midY)
+				let point = CGPoint(x: rect.midX + effectiveLinePitch, y: rect.midY)
 				return stringIndex(for: point)
 			}
 		case .up:
@@ -778,6 +783,38 @@ public class PorticoTextLayoutEngine {
 		
 		var origins = [CGPoint](repeating: .zero, count: lines.count)
 		CTFrameGetLineOrigins(textFrame, CFRangeMake(0, 0), &origins)
+
+		// 縦中横 interior (slice-4 witness finding): inside a group the
+		// LOCAL inline direction is horizontal — the caret between the
+		// upright characters is a VERTICAL bar between them, not the
+		// column-shaped bar (which strikes through the pair). Position
+		// comes from the mini-line's own CT offset (matches the drawn
+		// glyphs exactly, including compression and asymmetric pairs);
+		// y-span is the mini-line's glyph height, so the caret reads as
+		// belonging to the text. Boundary carets (index at group start/end)
+		// deliberately fall through to the column shape.
+		for group in currentTateChuYokoGroups() {
+			guard index > group.location, index < group.location + group.length,
+			      let cell = tateChuYokoCell(for: group) else { continue }
+			let baseAttributes = attributedString.attributes(at: group.location, effectiveRange: nil)
+			let mini = PorticoTateChuYoko.miniLine(
+				groupText: (attributedString.string as NSString).substring(with: group),
+				baseAttributes: baseAttributes,
+				cellCross: cell.width,
+				stroke: nil)
+			let localOffset = CGFloat(CTLineGetOffsetForStringIndex(
+				mini.line, index - group.location, nil))
+			let drawX = cell.midX - mini.width / 2
+			let baseline = cell.midY - (mini.ascent - mini.descent) / 2
+			let pathBounds = CTLineGetBoundsWithOptions(mini.line, [.useGlyphPathBounds])
+			let ySpan: (y: CGFloat, height: CGFloat)
+			if !pathBounds.isNull, !pathBounds.isEmpty {
+				ySpan = (baseline + pathBounds.minY, pathBounds.height)
+			} else {
+				ySpan = (baseline - mini.descent, mini.ascent + mini.descent)
+			}
+			return CGRect(x: drawX + localOffset - 1, y: ySpan.y, width: 2, height: ySpan.height)
+		}
 
 		// Extra line fragment: the caret after a TRAILING hard break sits at
 		// the head of a line that has no CTLine yet — synthesize it from the

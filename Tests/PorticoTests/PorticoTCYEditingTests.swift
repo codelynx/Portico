@@ -266,3 +266,63 @@ private func relayout(_ engine: PorticoTextLayoutEngine) {
 	}
 	#expect(caret.midX < cell.minX, "caret in the NEXT column (left of the group's)")
 }
+
+// MARK: - Interior caret shape (witness finding: strikethrough → vertical bar)
+
+@Test @MainActor func interiorCaretIsVerticalBarBoundariesStayColumnShaped() {
+	// THE shape pin the earlier midY-in-cell test was blind to: inside a
+	// group the caret follows the LOCAL inline direction (taller-than-wide
+	// vertical bar between the upright glyphs); boundary carets keep the
+	// column shape (wider-than-tall).
+	let engine = editEngine("あ12う")
+	let interior = engine.caretRect(for: 2)
+	#expect(interior.height > interior.width,
+	        "interior caret is a VERTICAL bar, got \(interior)")
+	for boundary in [1, 3] {
+		let rect = engine.caretRect(for: boundary)
+		#expect(rect.width > rect.height,
+		        "boundary caret at \(boundary) stays column-shaped, got \(rect)")
+	}
+	// And it sits BETWEEN the glyphs: x strictly inside the cell, y-span
+	// within the cell's vertical extent.
+	guard let cell = engine.tateChuYokoCell(for: NSRange(location: 1, length: 2)) else {
+		Issue.record("cell missing"); return
+	}
+	#expect(interior.midX > cell.minX && interior.midX < cell.maxX)
+	#expect(interior.minY >= cell.minY - 1 && interior.maxY <= cell.maxY + 1)
+}
+
+@Test @MainActor func interiorCaretUsesMiniLineOffsetForAsymmetricPairs() {
+	// The x-position comes from the mini-line's OWN CT offset (review form):
+	// for "12" that's ≈ the visual midpoint; for "!?" (asymmetric advances)
+	// it must match the mini-line's real glyph boundary, not width/2.
+	let engine = editEngine("あ!?う")
+	guard let cell = engine.tateChuYokoCell(for: NSRange(location: 1, length: 2)) else {
+		Issue.record("cell missing"); return
+	}
+	let interior = engine.caretRect(for: 2)
+	let attrs: [NSAttributedString.Key: Any] = [.font: editFont]
+	let mini = PorticoTateChuYoko.miniLine(
+		groupText: "!?", baseAttributes: attrs, cellCross: cell.width, stroke: nil)
+	let expectedX = (cell.midX - mini.width / 2)
+		+ CGFloat(CTLineGetOffsetForStringIndex(mini.line, 1, nil))
+	#expect(abs(interior.midX - expectedX) <= 1,
+	        "caret x (\(interior.midX)) == mini-line offset (\(expectedX))")
+}
+
+@Test @MainActor func columnHopsFromInteriorCaretStillCrossColumns() {
+	// The review-caught movement hole: vertical L/R hops probe by COLUMN
+	// PITCH now, not the caret rect's width — a 2pt interior caret must not
+	// strand the cursor in its own column.
+	let engine = PorticoTextLayoutEngine(
+		attributedString: NSAttributedString(string: "あいうえ12", attributes: [.font: editFont]),
+		orientation: .vertical, bounds: .zero)
+	engine.update(bounds: engine.measuredSize(inlineExtent: 42)) // 3 cells/column → 2 columns
+	// Column 1: あいう; column 2: え12. Interior of the group = index 5.
+	let interior = 5
+	let hopped = engine.index(from: interior, moving: .right) // toward the PREVIOUS (right) column
+	#expect(hopped <= 3, "right-hop from the interior lands in column 1, got \(hopped)")
+	// And from a column-1 position, left lands in column 2.
+	let back = engine.index(from: 1, moving: .left)
+	#expect(back >= 3, "left-hop from column 1 lands in column 2, got \(back)")
+}
