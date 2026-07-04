@@ -9,6 +9,22 @@ notation form** for serialization. The owner has explicitly freed the notation f
 Aozora compatibility ("the format is ours to evolve" — recorded in the MangaLoft slice-4
 plan).
 
+## Foundational invariant (OWNER-RATIFIED 2026-07-04)
+
+**The `NSAttributedString` is the model; notation is only an encoding.** Ruby, the TCY
+override, and every future Japanese-typesetting annotation (圏点/kenten, 割注/warichu,
+傍線…) live as ATTRIBUTES on the attributed string — one new attribute key + one
+notation keyword per kind, forever. Layout/editing/undo/rendering read attributes and
+never touch notation. This is the attribute-span model the survey's engineered systems
+(InDesign, Word, CSS, TTML) converge on.
+
+Corollaries:
+- **Aozora `《》` is a ONE-WAY import filter** (`parse(aozora:)` → ruby attributes);
+  nothing ever emits `《》`. It is a conversion courtesy, not a representation.
+- **Automatic TCY stays DERIVED, never stored** — the string carries only OVERRIDES
+  (artist intent); the automatic rule remains a pure function of the text at layout
+  time, so documents ride rule improvements for free.
+
 ## Model
 
 One attribute key, ruby's shape:
