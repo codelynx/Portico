@@ -210,17 +210,23 @@ private func relayout(_ engine: PorticoTextLayoutEngine) {
 	#expect(engine.selectionRange == NSRange(location: 1, length: 1))
 }
 
-@Test @MainActor func interiorTapSnapsToNearerBoundary() {
+@Test @MainActor func interiorTapResolvesByMiniLineGap() {
+	// 0.6.0 REV 2 (supersedes the v1 cell-half snap): the glyphs run
+	// HORIZONTALLY inside the cell, so the tap's X picks the nearest
+	// mini-line gap — left edge → before the group, right edge → after,
+	// center → BETWEEN the digits (real-editor behavior; interior gaps
+	// must be reachable for 3+-length combines).
 	let engine = editEngine("あ12う")
 	guard let cell = engine.tateChuYokoCell(for: NSRange(location: 1, length: 2)) else {
 		Issue.record("cell missing"); return
 	}
-	let columnX = cell.midX
-	// Upper (leading) half → group start; lower (trailing) half → group end.
-	let upper = engine.stringIndex(for: CGPoint(x: columnX, y: cell.maxY - cell.height * 0.25))
-	let lower = engine.stringIndex(for: CGPoint(x: columnX, y: cell.minY + cell.height * 0.25))
-	#expect(upper == 1, "leading-half tap → group start, got \(upper)")
-	#expect(lower == 3, "trailing-half tap → group end, got \(lower)")
+	let y = cell.midY
+	let left = engine.stringIndex(for: CGPoint(x: cell.minX + 0.5, y: y))
+	let center = engine.stringIndex(for: CGPoint(x: cell.midX, y: y))
+	let right = engine.stringIndex(for: CGPoint(x: cell.maxX - 0.5, y: y))
+	#expect(left == 1, "left-edge tap → group start, got \(left)")
+	#expect(center == 2, "center tap → between the digits, got \(center)")
+	#expect(right == 3, "right-edge tap → group end, got \(right)")
 }
 
 @Test @MainActor func doubleClickWordSelectsThePair() {

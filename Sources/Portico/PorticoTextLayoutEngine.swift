@@ -81,14 +81,19 @@ public class PorticoTextLayoutEngine {
 	private func inheritedAttributes(
 		at target: NSRange, in string: NSAttributedString
 	) -> [NSAttributedString.Key: Any] {
+		var attributes: [NSAttributedString.Key: Any]
 		if target.location > 0, target.location - 1 < string.length {
-			return string.attributes(at: target.location - 1, effectiveRange: nil)
+			attributes = string.attributes(at: target.location - 1, effectiveRange: nil)
+		} else if target.location + target.length < string.length {
+			attributes = string.attributes(at: target.location + target.length, effectiveRange: nil)
+		} else {
+			attributes = typingAttributes
 		}
-		let after = target.location + target.length
-		if after < string.length {
-			return string.attributes(at: after, effectiveRange: nil)
-		}
-		return typingAttributes
+		// 縦中横 override never extends by typing at its boundary (ruby's
+		// group-boundary rule, same rationale: the annotation is an artist's
+		// range-scoped intent, not a typing mode).
+		attributes.removeValue(forKey: PorticoTateChuYoko.overrideKey)
+		return attributes
 	}
 	/// Framework-internal (set by `PorticoView`, **not** part of the client observation API): fired
 	/// after every content relayout so the view repaints on engine-driven changes it didn't
@@ -569,6 +574,49 @@ public class PorticoTextLayoutEngine {
 		updateLayout()
 	}
 
+	/// Apply or clear a 縦中横 override (0.6.0 PR-1). Range surgery (review
+	/// fold): every override span INTERSECTING `range` is cleared first, so a
+	/// partial overlap replaces the intersection cleanly (ruby's surgery
+	/// template); then `kind` (if non-nil) applies over the whole range as
+	/// ONE identity-boxed span. No-op calls (clearing where nothing exists)
+	/// push no undo step. Precedence with ruby is handled at DERIVATION
+	/// (ruby wins); nesting is not expressible in serialization.
+	public func setTateChuYoko(_ kind: PorticoTateChuYoko.Override.Kind?, for range: NSRange) {
+		guard range.length > 0, range.location >= 0,
+		      NSMaxRange(range) <= attributedString.length else { return }
+		let mutableString = NSMutableAttributedString(attributedString: attributedString)
+		var touched = false
+		mutableString.enumerateAttribute(
+			PorticoTateChuYoko.overrideKey,
+			in: NSRange(location: 0, length: mutableString.length)
+		) { value, spanRange, _ in
+			guard value != nil, NSIntersectionRange(spanRange, range).length > 0 else { return }
+			mutableString.removeAttribute(PorticoTateChuYoko.overrideKey, range: spanRange)
+			touched = true
+		}
+		if let kind {
+			mutableString.addAttribute(
+				PorticoTateChuYoko.overrideKey,
+				value: PorticoTateChuYoko.Override(kind),
+				range: range)
+			touched = true
+		}
+		guard touched else { return }
+		beginUndoStep()
+		attributedString = mutableString
+		textDidChange?(attributedString)
+		updateLayout()
+	}
+
+	/// The 縦中横 override covering `index`, if any — the menu-title seam
+	/// (state-dependent toggle) and tests read this.
+	public func tateChuYokoOverride(at index: Int) -> PorticoTateChuYoko.Override.Kind? {
+		guard index >= 0, index < attributedString.length else { return nil }
+		let value = attributedString.attribute(
+			PorticoTateChuYoko.overrideKey, at: index, effectiveRange: nil)
+		return (value as? PorticoTateChuYoko.Override)?.kind
+	}
+
 	/// The current selection serialized to Aozora notation (ruby preserved), or nil if there is no
 	/// non-empty selection. Plain text serializes to itself (no marks).
 	func serializedSelection() -> String? {
@@ -679,16 +727,26 @@ public class PorticoTextLayoutEngine {
 	public func stringIndex(for point: CGPoint) -> Int {
 		guard let hit = lineHit(for: point) else { return 0 }
 		let index = CTLineGetStringIndexForPosition(hit.line, hit.relativePoint)
-		// 縦中横 interior-tap rule (slice-4 P5 pin, DELIBERATE — not fallout):
-		// a tap resolving strictly INSIDE a group snaps to the nearer
-		// boundary by cell half — the pair edits as two characters, but a
-		// caret placed between them by a tap reads as a mis-tap, not intent.
-		// (Arrow keys remain index-based and can still park mid-group.)
+		// 縦中横 interior-tap rule (0.6.0 REV 2 — supersedes the v1 cell-half
+		// snap): a tap inside a group's cell resolves via the MINI-LINE's own
+		// gap geometry — the glyphs run horizontally inside the cell, so the
+		// tap's X picks the nearest glyph gap (including interior gaps, which
+		// 3+-length combines need reachable). Real-editor behavior: a center
+		// tap on "12" parks between the digits.
 		for group in currentTateChuYokoGroups() {
 			guard index > group.location, index < group.location + group.length,
 			      let cell = tateChuYokoCell(for: group) else { continue }
-			// Vertical: leading half = the UPPER half of the cell.
-			return point.y >= cell.midY ? group.location : group.location + group.length
+			let baseAttributes = attributedString.attributes(at: group.location, effectiveRange: nil)
+			let mini = PorticoTateChuYoko.miniLine(
+				groupText: (attributedString.string as NSString).substring(with: group),
+				baseAttributes: baseAttributes,
+				cellCross: cell.width,
+				stroke: nil)
+			let drawX = cell.midX - mini.width / 2
+			let local = CTLineGetStringIndexForPosition(
+				mini.line, CGPoint(x: point.x - drawX, y: 0))
+			guard local != kCFNotFound else { return group.location }
+			return group.location + max(0, min(local, group.length))
 		}
 		return index
 	}
@@ -1561,9 +1619,7 @@ public class PorticoTextLayoutEngine {
 	/// pure derivation the reservation uses; shared by draw + inkBounds.
 	private func currentTateChuYokoGroups() -> [NSRange] {
 		guard orientation == .vertical else { return [] }
-		return PorticoTateChuYoko.groups(
-			in: attributedString.string,
-			excluding: PorticoTateChuYoko.genuineRubyRanges(in: attributedString))
+		return PorticoTateChuYoko.effectiveGroups(in: attributedString)
 	}
 
 	/// The 縦中横 cell in engine (bottom-left) coordinates, derived WITHIN
