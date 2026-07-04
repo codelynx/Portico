@@ -651,9 +651,33 @@ public class PorticoTextLayoutEngine {
 		updateLayout()
 	}
 	
+	/// Grow `range` to cover any 縦中横 group it partially intersects.
+	private func expandedAcrossTateChuYokoGroups(_ range: NSRange) -> NSRange {
+		var expanded = range
+		for group in currentTateChuYokoGroups() {
+			guard NSIntersectionRange(group, expanded).length > 0 else { continue }
+			let start = min(expanded.location, group.location)
+			let end = max(expanded.location + expanded.length, group.location + group.length)
+			expanded = NSRange(location: start, length: end - start)
+		}
+		return expanded
+	}
+
 	public func stringIndex(for point: CGPoint) -> Int {
 		guard let hit = lineHit(for: point) else { return 0 }
-		return CTLineGetStringIndexForPosition(hit.line, hit.relativePoint)
+		let index = CTLineGetStringIndexForPosition(hit.line, hit.relativePoint)
+		// 縦中横 interior-tap rule (slice-4 P5 pin, DELIBERATE — not fallout):
+		// a tap resolving strictly INSIDE a group snaps to the nearer
+		// boundary by cell half — the pair edits as two characters, but a
+		// caret placed between them by a tap reads as a mis-tap, not intent.
+		// (Arrow keys remain index-based and can still park mid-group.)
+		for group in currentTateChuYokoGroups() {
+			guard index > group.location, index < group.location + group.length,
+			      let cell = tateChuYokoCell(for: group) else { continue }
+			// Vertical: leading half = the UPPER half of the cell.
+			return point.y >= cell.midY ? group.location : group.location + group.length
+		}
+		return index
 	}
 
 	/// Glyph *containing* `point` (containment semantics), for hit-testing. A tap on a glyph's
@@ -818,6 +842,12 @@ public class PorticoTextLayoutEngine {
 	/// returns only the first line, this spans a multi-line selection. Shared by the
 	/// on-screen selection highlight and iOS `UITextInput.selectionRects(for:)`.
 	public func selectionRects(for range: NSRange) -> [CGRect] {
+		// 縦中横 (slice-4 P5 pin): any range INTERSECTING a group shows the
+		// WHOLE cell — half-a-pair highlights are meaningless for an upright
+		// pair drawn as one unit. Visual expansion only; the stored
+		// selection/marked RANGE is untouched (editing granularity stays
+		// per-character).
+		let range = expandedAcrossTateChuYokoGroups(range)
 		guard let textFrame = textFrame, range.length > 0 else { return [] }
 		let lines = CTFrameGetLines(textFrame) as! [CTLine]
 		guard !lines.isEmpty else { return [] }
@@ -1491,20 +1521,41 @@ public class PorticoTextLayoutEngine {
 			excluding: PorticoTateChuYoko.genuineRubyRanges(in: attributedString))
 	}
 
-	/// The 縦中横 cell in engine (bottom-left) coordinates, derived from the
-	/// PROVEN caret geometry (PR-1 pins) rather than re-deriving run
-	/// positions. Nil when the group split across columns (wrap boundary —
-	/// PR-3 territory) or has no layout.
-	private func tateChuYokoCell(for group: NSRange) -> CGRect? {
-		let startRect = caretRect(for: group.location)
-		let endRect = caretRect(for: group.location + group.length)
-		guard startRect != .zero, endRect != .zero,
-		      abs(startRect.minX - endRect.minX) < 0.5 // same column
-		else { return nil }
-		let top = startRect.maxY
-		let bottom = endRect.maxY
-		guard top > bottom else { return nil }
-		return CGRect(x: startRect.minX, y: bottom, width: startRect.width, height: top - bottom)
+	/// The 縦中横 cell in engine (bottom-left) coordinates, derived WITHIN
+	/// the group's own line (same offset/origin formulas as `caretRect`).
+	/// PR-3 finding: the earlier two-caret derivation misread a column
+	/// break landing right AFTER a group as a split — `caretRect(for:
+	/// groupEnd)` resolves to the NEXT line's head at that boundary, and
+	/// the mini-line silently skipped (the forbidden blank-cell class).
+	/// Both offsets computed against the line CONTAINING the group are
+	/// boundary-safe. Nil only for a TRUE split (the group's characters on
+	/// different lines) or no layout.
+	func tateChuYokoCell(for group: NSRange) -> CGRect? {
+		guard orientation == .vertical, let textFrame = textFrame else { return nil }
+		let lines = CTFrameGetLines(textFrame) as! [CTLine]
+		guard !lines.isEmpty else { return nil }
+		var origins = [CGPoint](repeating: .zero, count: lines.count)
+		CTFrameGetLineOrigins(textFrame, CFRangeMake(0, 0), &origins)
+
+		for (line, origin) in zip(lines, origins) {
+			let range = CTLineGetStringRange(line)
+			guard group.location >= range.location,
+			      group.location < range.location + range.length else { continue }
+			guard group.location + group.length <= range.location + range.length else {
+				return nil // TRUE split: the pair's characters are on different lines
+			}
+			var ascent: CGFloat = 0
+			var descent: CGFloat = 0
+			var leading: CGFloat = 0
+			CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
+			let startOffset = CTLineGetOffsetForStringIndex(line, group.location, nil)
+			let endOffset = CTLineGetOffsetForStringIndex(line, group.location + group.length, nil)
+			let top = origin.y - startOffset
+			let bottom = origin.y - endOffset
+			guard top > bottom else { return nil }
+			return CGRect(x: origin.x - descent, y: bottom, width: ascent + descent, height: top - bottom)
+		}
+		return nil
 	}
 
 	/// Draw each group's upright mini-line centered in its cell. `stroke`

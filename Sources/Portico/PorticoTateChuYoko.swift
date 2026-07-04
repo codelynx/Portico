@@ -148,6 +148,20 @@ enum PorticoTateChuYoko {
 					hidden = CTFontCreateWithName("Helvetica" as CFString, 0.01, nil)
 				}
 				layoutString.addAttribute(.font, value: hidden, range: group)
+				// SAME-LENGTH stand-in normalization (PR-3 force-wrap sweep
+				// finding): Core Text's line breaker SPLITS a bang pair at
+				// specific extents ("!?" broke at a 24pt column) while digit
+				// pairs never split anywhere in the sweep — NU×NU (UAX-14
+				// numeric) protection held empirically. Replace the group's
+				// characters with digits in the LAYOUT COPY so every pinned
+				// pair inherits that protection: length identical (every
+				// UTF-16 index stays valid), glyphs are hidden sub-pixel
+				// clear-color anyway, and the marker attribute carries the
+				// REAL text for the mini-line. This makes wrap-split
+				// unreachable BY CONSTRUCTION — the ungroup-and-relayout
+				// machinery the plan named is not needed.
+				layoutString.replaceCharacters(
+					in: group, with: String(repeating: "0", count: group.length))
 			}
 		}
 	}
