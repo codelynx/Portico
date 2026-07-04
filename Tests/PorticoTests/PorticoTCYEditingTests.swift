@@ -37,16 +37,25 @@ private func relayout(_ engine: PorticoTextLayoutEngine) {
 // MARK: - (REQUIRED FIRST) Wrap-split: unreachable for the pinned scope?
 
 @Test @MainActor func forceWrapSweepNeverSplitsAPinnedPair() {
-	// The UAX-14 question, answered empirically: for a battery of contents
-	// and wrap extents (down to ONE-CELL columns), every detected group's
-	// cell must resolve (start/end carets in the SAME column). NU×NU and
-	// the bang-pair classes prohibit intra-pair breaks — this sweep is the
-	// proof for OUR pinned scope, fonts, and Core Text version. If it ever
-	// fails, the plan's ungroup-and-relayout machinery becomes REQUIRED
+	// The wrap-split question, answered empirically ACROSS THREE ROUNDS:
+	// (1) bang pairs split internally under their own UAX-14 classes;
+	// (2) an all-digit stand-in welded ADJACENT groups + flanking digits
+	// into one unbreakable NU run (split inside a group at 21/35pt);
+	// (3) the boundary-safe "0・" stand-in (NU + NS dot) holds the pair
+	// while allowing separation after it. This sweep — including the
+	// adjacency battery — is the proof for our pinned scope, fonts, and
+	// CT version. If it ever fails, ungroup-and-relayout becomes REQUIRED
 	// (blank cells are forbidden).
-	let contents = ["あ12う", "ああああ12", "12ああああ", "あ!?う", "ああ12ああ!?あ", "あああ12\nう12"]
+	let contents = [
+		"あ12う", "ああああ12", "12ああああ", "あ!?う", "ああ12ああ!?あ", "あああ12\nう12",
+		// adjacency + flanking battery (review fold — the class-leak cases)
+		"12!?", "!?12", "あ12!?う", "1!?2", "12!?34",
+	]
 	for content in contents {
-		for extent in stride(from: CGFloat(8), through: 80, by: 4) {
+		// The guarantee's CONTRACT floor: one character cell (14pt here) —
+		// sub-cell columns are degenerate for all text, and the host floors
+		// boxText at 2× font size anyway.
+		for extent in stride(from: CGFloat(14), through: 80, by: 2) {
 			let engine = PorticoTextLayoutEngine(
 				attributedString: NSAttributedString(string: content, attributes: [.font: editFont]),
 				orientation: .vertical, bounds: .zero)
@@ -218,6 +227,29 @@ private func relayout(_ engine: PorticoTextLayoutEngine) {
 	let engine = editEngine("あ12う")
 	#expect(engine.wordRange(at: 1) == NSRange(location: 1, length: 2),
 	        "the digit pair is one word")
+	// Bang pairs too (review fold): the system tokenizer has no useful word
+	// for "!?", so the group IS the word.
+	let bangs = editEngine("あ!?う")
+	#expect(bangs.wordRange(at: 1) == NSRange(location: 1, length: 2),
+	        "the bang pair is one word")
+	#expect(bangs.wordRange(at: 2) == NSRange(location: 1, length: 2))
+}
+
+@Test @MainActor func standInNeverLeaksIntoUserVisibleStrings() {
+	// The leak gate (review fold): the layout copy textually lies ("0・"
+	// stand-ins) — no string-returning surface may ever show it. A document
+	// whose ONLY content is a bang pair round-trips with zero stand-in
+	// characters anywhere.
+	let engine = editEngine("!?")
+	#expect(engine.attributedString.string == "!?", "backing store")
+	#expect(PorticoRuby.serialize(engine.attributedString) == "!?", "Aozora serialization")
+	#expect(engine.wordRange(at: 0) == NSRange(location: 0, length: 2))
+	engine.setSelectedRange(NSRange(location: 0, length: 2))
+	let selected = (engine.attributedString.string as NSString)
+		.substring(with: engine.selectionRange ?? NSRange())
+	#expect(selected == "!?", "selection text extraction (the copy path's source)")
+	#expect(!engine.attributedString.string.contains("0"), "no stand-in digits")
+	#expect(!engine.attributedString.string.contains("・"), "no stand-in dots")
 }
 
 // MARK: - Extra-line-fragment interplay

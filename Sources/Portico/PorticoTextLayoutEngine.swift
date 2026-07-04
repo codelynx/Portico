@@ -322,6 +322,14 @@ public class PorticoTextLayoutEngine {
 	/// kana boundaries), or nil if `index` isn't within a word (e.g. whitespace/punctuation).
 	/// Backs double-click word selection.
 	public func wordRange(at index: Int) -> NSRange? {
+		// 縦中横: a group IS the word for any probe inside it — the system
+		// tokenizer handles digit pairs but returns nothing useful for the
+		// bang pairs ("!?"), which are pinned v1 groups (review fold).
+		for group in currentTateChuYokoGroups() {
+			if index >= group.location, index < group.location + group.length {
+				return group
+			}
+		}
 		let ns = attributedString.string as NSString
 		guard ns.length > 0 else { return nil }
 		let probe = max(0, min(index, ns.length - 1))

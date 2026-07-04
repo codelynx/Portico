@@ -148,21 +148,23 @@ enum PorticoTateChuYoko {
 					hidden = CTFontCreateWithName("Helvetica" as CFString, 0.01, nil)
 				}
 				layoutString.addAttribute(.font, value: hidden, range: group)
-				// SAME-LENGTH stand-in normalization (PR-3 force-wrap sweep
-				// finding): Core Text's line breaker SPLITS a bang pair at
-				// specific extents ("!?" broke at a 24pt column) while digit
-				// pairs never split anywhere in the sweep — NU×NU (UAX-14
-				// numeric) protection held empirically. Replace the group's
-				// characters with digits in the LAYOUT COPY so every pinned
-				// pair inherits that protection: length identical (every
-				// UTF-16 index stays valid), glyphs are hidden sub-pixel
-				// clear-color anyway, and the marker attribute carries the
-				// REAL text for the mini-line. This makes wrap-split
-				// unreachable BY CONSTRUCTION — the ungroup-and-relayout
-				// machinery the plan named is not needed.
-				layoutString.replaceCharacters(
-					in: group, with: String(repeating: "0", count: group.length))
 			}
+			// SAME-LENGTH stand-in normalization (PR-3 force-wrap findings,
+			// three rounds): (1) a bang pair split internally under its own
+			// UAX-14 classes ("!?" at 24pt); (2) an all-digit stand-in ("00")
+			// welded ADJACENT groups and flanking digits into one unbreakable
+			// NU run; (3) a digit-led stand-in ("0・") still welded a LEADING
+			// real digit (NU×NU). The stand-in is "あ・" — [ID][NS]:
+			// ideograph first (breakable from ANY left neighbor), KATAKANA
+			// MIDDLE DOT second (NS: break before it prohibited → the pair
+			// holds; break after it allowed → neighbors separate). Length
+			// identical (indices valid), glyphs hidden sub-pixel anyway, the
+			// marker carries the REAL text. Deliberately OUTSIDE the A/B
+			// seam guard: the seam tests suppression, not break protection.
+			// CONTRACT: the no-split guarantee holds for inline extents ≥
+			// one character cell — sub-cell columns are degenerate for ALL
+			// text (MangaLoft floors boxText at 2× font size).
+			layoutString.replaceCharacters(in: group, with: "あ・")
 		}
 	}
 
