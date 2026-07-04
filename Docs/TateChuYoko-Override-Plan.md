@@ -56,16 +56,58 @@ half-width digit — same as today's Hiragino default, so visually a no-op; acce
   otherwise → "縦中横" (applies `combine`). One menu item, state-dependent title —
   ruby's prefill-or-create pattern.
 
-## Notation (owned; Aozora-free by owner decree)
+## Notation — REDESIGN SCOPE WIDENED (owner, 2026-07-04)
 
-Serialize a `combine` range as **`〈…〉`** (U+3008/9 ANGLE BRACKETS): `〈123〉年` —
-compact, typeable, visually light, and unlike ［＃…］ it reads inline. `suppress`
-serializes as `〈/…〉`. Literal 〈〉 in body text joins the existing known limitation
-(`《》｜` are already control characters — gap 9, same disposition). Parse/serialize
-round-trip lives beside `PorticoRuby`'s.
+The owner dislikes the Aozora ruby markup itself ("doesn't sound like designed by
+computer scientists") — the notation question now covers RUBY TOO, not just the TCY
+override. Reference survey of how engineered systems mark these up:
 
-- Auto-detected groups serialize as PLAIN TEXT (unchanged — automatic means automatic;
-  only overrides carry notation).
+### How others do it
+
+| System | Ruby | 縦中横 (TCY) | Model |
+|---|---|---|---|
+| **HTML/CSS** | `<ruby>漢字<rt>かんじ</rt></ruby>` (+`<rp>` fallback) | `<span style="text-combine-upright: all">12</span>`; CSS `digits <n>` = the automatic rule | Structured element / style property |
+| **Adobe InDesign (tagged text)** | `<cRuby:1><cRubyString:かんじ>漢字<cRuby:>` | `<cTatechuyoko:1>12<cTatechuyoko:>` | **Attribute-span tags** — open/close attribute scopes, machine-oriented |
+| **Word / OOXML** | `<w:ruby>` element (rubyPr + rt + rubyBase) | run property `<w:eastAsianLayout w:combine="true"/>` | XML run properties |
+| **LaTeX (pxrubrica / pLaTeX)** | `\ruby{漢字}{かんじ}` | `\rensuji{12}` / `\tatechuyoko{12}` | Command + braced arguments |
+| **Unicode interlinear** | U+FFF9 漢字 U+FFFA かんじ U+FFFB | — | Control characters (engineered, but invisible = untypeable/undebuggable; little adoption) |
+| **でんでんマークダウン** (EPUB) | `{漢字|かんじ}` | inline HTML fallback | Minimal delimited pair |
+| **pixiv novels** | `[[rb:漢字 > かんじ]]` | — | **Namespaced double-bracket command** |
+| **カクヨム / なろう** | `｜漢字《かんじ》` (Aozora-derived) + `《《傍点》》` | — | Transcription-convention lineage (the style being rejected) |
+| **TTML/IMSC (broadcast)** | `tts:ruby="base/text/container"` | `tts:textCombine="all"` | XML attributes |
+
+### The engineering read
+
+Professionally-designed systems converge on TWO models: **attribute spans** (InDesign,
+Word, TTML, CSS — the annotation is styling scoped to a range, exactly Portico's
+in-memory model already) and, for plain text, **a uniform command grammar** with the
+base and annotation both explicitly delimited (LaTeX, pixiv, denden). Aozora's
+`｜…《…》` is neither: it's a reading convention with implicit base detection, no
+escaping (Portico gap 9 exists BECAUSE of it), and no extension point — every new
+annotation type needs new punctuation.
+
+### Recommendation: one namespaced span grammar for ALL annotations
+
+```
+[[ruby:漢字|かんじ]]     ruby
+[[tcy:123]]              force-combine
+[[tcy/:12]]              suppress-combine
+future: [[em:強調]] (圏点), [[warichu:…]], …
+```
+
+- **One grammar, open namespace** — new annotation kinds cost a keyword, not new
+  punctuation (the pixiv insight, generalized).
+- **Explicit base** — no implicit base-detection heuristics (the `｜` hack dies).
+- **Escapable by design** — literal `[[` escapes as `\[[`; closes gap 9 for the new
+  format instead of inheriting it.
+- **ASCII delimiters** — typeable on any keyboard, greppable, diff-friendly; the
+  payload stays Japanese.
+- Pre-1.0 no-migration posture: `serialize` emits ONLY the new grammar;
+  `parse` may keep Aozora `《》` acceptance as an IMPORT convenience (decide at
+  review — owner antipathy may argue for a clean break).
+
+Auto-detected TCY groups still serialize as PLAIN TEXT (automatic means automatic;
+only overrides carry notation).
 
 ## Example app
 
@@ -94,8 +136,8 @@ needs no popover (it's a toggle), making it the seam's simplest possible demo.
 1. **PR-1** — attribute + `effectiveGroups` derivation + editing semantics (boundary
    non-extension, undo, setTateChuYoko) + generalized stand-in. Rule/measure/editing
    test matrix incl. suppress-over-auto and combine-of-3.
-2. **PR-2** — notation parse/serialize round-trip (`〈〉`, `〈/〉`) + leak/round-trip
-   gates.
+2. **PR-2** — the NEW notation: `[[…]]` grammar parse/serialize for ruby AND tcy,
+   escaping, round-trip + leak gates; decide Aozora-parse-compat at review.
 3. **PR-3** — multi-action menu seam + Example wiring (macOS + iOS) + 0.6.0 release.
 
 ## Open questions for review
