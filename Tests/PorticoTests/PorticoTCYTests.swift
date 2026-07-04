@@ -403,9 +403,11 @@ private func inkedBBox(_ engine: PorticoTextLayoutEngine, band: ClosedRange<CGFl
 }
 
 @Test @MainActor func suppressionAttributesAreCausal() {
-	// The A/B (review fold): disable the plan-B attributes via the test seam
-	// and ink must increase MATERIALLY — proving the attributes do the
-	// suppressing (survives font/AA drift; compares the build to itself).
+	// The A/B (review fold): disable the suppression attributes via the test
+	// seam and ink must increase MATERIALLY — proving the attributes do the
+	// suppressing. (Since the あ・ stand-in landed OUTSIDE this seam, the
+	// unsuppressed ink is the full-size hidden STAND-IN glyphs, not the
+	// literal original pair — the causal claim is unchanged.)
 	let suppressed = inkPixelCount(tcyEngine("12"))
 	PorticoTateChuYoko.suppressionDisabledForTesting = true
 	defer { PorticoTateChuYoko.suppressionDisabledForTesting = false }
