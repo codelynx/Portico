@@ -149,6 +149,36 @@ private func cells(_ engine: PorticoTextLayoutEngine) -> CGFloat {
 	#expect(groups == [NSRange(location: 0, length: 2)], "the cell stays a pair")
 }
 
+@Test @MainActor func typingStrictlyInsideOverrideExtendsIt() {
+	// Ruby parity (review fold): insertion strictly INSIDE a span joins it —
+	// same edge rule as insertionExtendsRubyGroup; the inherited box is the
+	// SAME instance, so the span stays one run.
+	let engine = ovEngine("12")
+	engine.setTateChuYoko(.combine, for: NSRange(location: 0, length: 2))
+	engine.cursorIndex = 1
+	engine.insertText("3")
+	#expect(engine.tateChuYokoOverride(at: 1) == .combine,
+	        "typed '3' joins the span (ruby's interior rule)")
+	let groups = PorticoTateChuYoko.effectiveGroups(in: engine.attributedString)
+	#expect(groups == [NSRange(location: 0, length: 3)], "one 3-char cell, one run")
+}
+
+@Test @MainActor func setRubyTrimsOverrideUnderNewBase() {
+	// Surgery symmetry (review fold): setTateChuYoko clears what it
+	// overlaps; setRuby now does the same in the other direction — an
+	// override never stays stored UNDER a ruby base. Fragments outside
+	// the base survive (the combine − ruby algebra).
+	let string = NSMutableAttributedString(string: "1234")
+	string.addAttribute(PorticoTateChuYoko.overrideKey,
+	                    value: PorticoTateChuYoko.Override(.combine),
+	                    range: NSRange(location: 0, length: 4))
+	PorticoRuby.setRuby("よみ", for: NSRange(location: 0, length: 2), in: string)
+	#expect(string.attribute(PorticoTateChuYoko.overrideKey, at: 0, effectiveRange: nil) == nil,
+	        "no override under the new ruby base")
+	#expect(string.attribute(PorticoTateChuYoko.overrideKey, at: 2, effectiveRange: nil) != nil,
+	        "the fragment outside the base survives")
+}
+
 // MARK: - (4) 3+ behavior
 
 @Test @MainActor func forceWrapSweepHoldsForLongerCombines() {

@@ -203,3 +203,43 @@ needs no popover.
 - **OQ-D ✅ available-and-inert in horizontal** — intent survives orientation flips
   (alignment/pitch precedent); a hidden item would make the attribute a phantom state.
   Menu help text: "applies in vertical text".
+
+## PR-1+PR-2 review fold (2026-07-04, three reviewers)
+
+All findings folded on develop; 248/248 green.
+
+- **Parser fail-safe hardened (blocker ×2)** — the old recovery (re-emit `[[`,
+  rescan from start+2) let a valid inner command annotate from inside a
+  malformed one. Now ANY invalid command re-emits its ENTIRE raw region —
+  opener through the first unescaped `]]`, or end of input — with zero
+  annotations. A malformed opener may swallow a later valid command into
+  literal text: the safe direction. A second bare `|` in ruby is malformed
+  (escape to include).
+- **Serialize emits non-ruby fragments (blocker)** — a TCY override straddling
+  a ruby base encodes its surviving `combine − ruby` fragments (the exact
+  algebra `effectiveGroups` renders) instead of whole-span drop; wholly-covered
+  emits nothing. `PorticoTateChuYoko.subtract` went internal so the encoder
+  and the layout share one subtraction.
+- **Surgery symmetry** — `PorticoRuby.setRuby` now removes the override under
+  the new base (fragments outside survive), mirroring `setTateChuYoko`'s
+  clearing in the other direction. The combine→setRuby-over-it state that
+  broke round-trip identity is no longer constructible through surgery;
+  direct-attribute states round-trip to their canonical equivalent.
+- **Typing strictly inside an override extends it** — ruby parity settled by
+  reading the house rule (`insertionExtendsRubyGroup`): interior insertions
+  join the span (same box instance, one run); boundary insertions stay plain.
+  Applies to insertText, marked text, and paste (paste never inherits).
+- **Sweep hardened** — alphabet gains newline + non-BMP surrogate pairs
+  (𩸽 🙂); override ranges are built on character boundaries.
+- **Interior-tap equivalence recorded** — for 2-char groups the mini-line-gap
+  rule and the v1 nearer-boundary snap are identical, so device-witnessed W2
+  behavior is preserved; the rewrite only adds interior gaps for 3+ groups.
+- **Aozora live conversion posture** — `applyInlineRubyConversion` (typing
+  `《》`) is a deliberate one-way IMPORT at typing time, same quarantine class
+  as `parse(aozora:)`; documented at the site. Nothing serializes to `《》`.
+
+Rides PR-3 (recorded): switch `serializedSelection`/`insertNotation` from the
+Aozora path to `PorticoNotation` (closes the paste-adjacent same-box
+coalescing hazard by construction — parse mints a fresh box per command), and
+add the direct pin: copy a combined span, paste adjacent, expect two distinct
+cells.

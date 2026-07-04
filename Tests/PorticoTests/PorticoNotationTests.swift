@@ -58,6 +58,11 @@ private func assertRoundTrip(_ attributed: NSAttributedString,
 	let meta = NSMutableAttributedString(string: #"a|b]c"#)
 	PorticoRuby.setRuby(#"x[y\z"#, for: NSRange(location: 0, length: 3), in: meta)
 	assertRoundTrip(meta, "metacharacter ruby")
+	// a pipe INSIDE a reading survives via escaping (a second BARE pipe is malformed)
+	let pipeReading = NSMutableAttributedString(string: "漢字")
+	PorticoRuby.setRuby("か|んじ", for: NSRange(location: 0, length: 2), in: pipeReading)
+	#expect(PorticoNotation.serialize(pipeReading) == #"[[ruby:漢字|か\|んじ]]"#)
+	assertRoundTrip(pipeReading, "pipe in reading")
 	// overrides, both kinds, adjacent
 	let tcy = NSMutableAttributedString(string: "あ1234う12え")
 	tcy.addAttribute(PorticoTateChuYoko.overrideKey,
@@ -86,24 +91,39 @@ private func assertRoundTrip(_ attributed: NSAttributedString,
 		seed = seed &* 6364136223846793005 &+ 1442695040888963407
 		return Int(seed >> 33) % bound
 	}
-	let alphabet = Array(#"あか12!?[]|\〈〉ンab:"#)
+	// Hostile alphabet: all four metacharacters, digits, bang-family,
+	// full-width lookalikes, a NEWLINE, and non-BMP surrogate pairs
+	// (review fold: a sweep that never crosses a surrogate boundary
+	// can't falsify the UTF-16 arithmetic).
+	let alphabet = Array("あか12!?[]|\\〈〉ンab:\n𩸽🙂")
 	for _ in 0..<50 {
 		let length = 4 + next(12)
 		var text = ""
 		for _ in 0..<length { text.append(alphabet[next(alphabet.count)]) }
 		let attributed = NSMutableAttributedString(string: text)
-		let ns = text as NSString
-		// sprinkle 0-2 overrides on non-overlapping ranges
-		if ns.length >= 4 {
-			let r1 = NSRange(location: 0, length: 1 + next(2))
+		// Character-boundary UTF-16 offsets — attribute ranges must never
+		// split a surrogate pair (that state isn't constructible through
+		// any Portico surgery, so the sweep doesn't build it either).
+		var charStarts: [Int] = []
+		var acc = 0
+		for character in text { charStarts.append(acc); acc += String(character).utf16.count }
+		charStarts.append(acc)
+		let charCount = charStarts.count - 1
+		func utf16Range(fromChar start: Int, chars: Int) -> NSRange {
+			NSRange(location: charStarts[start], length: charStarts[start + chars] - charStarts[start])
+		}
+		// sprinkle 0-2 overrides on non-overlapping character ranges
+		if charCount >= 4 {
+			let len1 = 1 + next(2)
 			attributed.addAttribute(PorticoTateChuYoko.overrideKey,
 			                        value: PorticoTateChuYoko.Override(next(2) == 0 ? .combine : .suppress),
-			                        range: r1)
-			let start2 = NSMaxRange(r1) + 1
-			if start2 + 1 < ns.length {
+			                        range: utf16Range(fromChar: 0, chars: len1))
+			let start2 = len1 + 1
+			if start2 + 1 < charCount {
+				let len2 = 1 + next(min(2, charCount - start2 - 1))
 				attributed.addAttribute(PorticoTateChuYoko.overrideKey,
 				                        value: PorticoTateChuYoko.Override(.combine),
-				                        range: NSRange(location: start2, length: 1 + next(min(2, ns.length - start2 - 1))))
+				                        range: utf16Range(fromChar: start2, chars: len2))
 			}
 		}
 		assertRoundTrip(attributed, "seeded case: \(text)")
@@ -145,14 +165,74 @@ private func assertRoundTrip(_ attributed: NSAttributedString,
 	#expect(PorticoNotation.parse("[[ruby:|か]]").string == "[[ruby:|か]]")
 	// tcy payload must not contain a bare pipe
 	#expect(PorticoNotation.parse("[[tcy:1|2]]").string == "[[tcy:1|2]]")
-	// nesting refused
-	#expect(PorticoNotation.parse("[[ruby:あ[[tcy:1]]|か]]").string.hasPrefix("[[ruby:あ"),
-	        "outer command fails safe; inner may still parse")
+	// a second bare pipe in ruby is malformed (escape a pipe to include it)
+	#expect(PorticoNotation.parse("[[ruby:a|b|c]]").string == "[[ruby:a|b|c]]")
+	// nesting refused: the WHOLE region re-emits literally, exactly
+	#expect(PorticoNotation.parse("[[ruby:あ[[tcy:1]]|か]]").string == "[[ruby:あ[[tcy:1]]|か]]")
 	// all malformed cases carry NO annotations
-	for bad in ["[[foo:bar]]", "[[tcy:]]", "[[ruby:あ|]]"] {
+	for bad in ["[[foo:bar]]", "[[tcy:]]", "[[ruby:あ|]]", "[[ruby:a|b|c]]", "[[tcy:1|2]]"] {
 		let (_, ruby, overrides) = semantic(PorticoNotation.parse(bad))
 		#expect(ruby.isEmpty && overrides.isEmpty, "\(bad) yields no annotations")
 	}
+}
+
+@Test @MainActor func malformedRegionsNeverAnnotate() {
+	// Review blocker: a malformed command must never let an INNER command
+	// annotate — the entire tentative region (opener through the first
+	// unescaped "]]", or end of input) re-emits as raw literal text.
+	for hostile in [
+		"[[ruby:あ[[tcy:12]]|か]]",  // valid tcy nested in ruby payload
+		"[[foo:x[[tcy:12]]",         // valid tcy nested in unknown-keyword region
+		"[[tcy:12[[tcy:34]]",        // valid tcy nested in tcy
+		"[[foo あ [[tcy:12]] い",    // malformed opener swallowing a later command
+	] {
+		let (text, ruby, overrides) = semantic(PorticoNotation.parse(hostile))
+		#expect(ruby.isEmpty && overrides.isEmpty, "\(hostile) yields no annotations")
+		#expect(text == hostile, "\(hostile) preserved as raw literal text")
+	}
+	// …and a valid command whose "]]" lies BEYOND a malformed region still
+	// parses once scanning resumes after the region.
+	let after = semantic(PorticoNotation.parse("[[foo:x]][[tcy:12]]"))
+	#expect(after.text == "[[foo:x]]12" && after.overrides == ["9,2=combine"],
+	        "recovery resumes cleanly after a terminated malformed region")
+}
+
+@Test @MainActor func overlapSerializesNonRubyFragments() {
+	// Review blocker: a combine straddling a ruby base emits its surviving
+	// non-ruby fragments (the same combine − ruby algebra effectiveGroups
+	// renders) — never a whole-span drop.
+	let string = NSMutableAttributedString(string: "1234")
+	PorticoRuby.setRuby("よみ", for: NSRange(location: 0, length: 2), in: string)
+	string.addAttribute(PorticoTateChuYoko.overrideKey,
+	                    value: PorticoTateChuYoko.Override(.combine),
+	                    range: NSRange(location: 0, length: 4)) // non-canonical, built directly
+	let encoded = PorticoNotation.serialize(string)
+	#expect(encoded == "[[ruby:12|よみ]][[tcy:34]]", "fragment emitted, got \(encoded)")
+	// round-trips to the CANONICAL equivalent (fragment-only override)
+	let (text, ruby, overrides) = semantic(PorticoNotation.parse(encoded))
+	#expect(text == "1234" && ruby == ["0,2=よみ"] && overrides == ["2,2=combine"])
+	// wholly ruby-covered override emits nothing
+	let covered = NSMutableAttributedString(string: "12あ")
+	PorticoRuby.setRuby("よみ", for: NSRange(location: 0, length: 2), in: covered)
+	covered.addAttribute(PorticoTateChuYoko.overrideKey,
+	                     value: PorticoTateChuYoko.Override(.suppress),
+	                     range: NSRange(location: 0, length: 2))
+	#expect(PorticoNotation.serialize(covered) == "[[ruby:12|よみ]]あ")
+}
+
+@Test @MainActor func newlinesAndNonBMPRoundTrip() {
+	// Newlines and surrogate-pair characters are NOT metacharacters: they
+	// pass through plain text and payloads unescaped, and every range stays
+	// correct across surrogate pairs (UTF-16 arithmetic pin).
+	assertRoundTrip(NSAttributedString(string: "あ\nい🙂𩸽"))
+	let ruby = NSMutableAttributedString(string: "𩸽の刺身")
+	PorticoRuby.setRuby("ほっけ", for: NSRange(location: 0, length: 2), in: ruby) // 𩸽 = 2 UTF-16 units
+	assertRoundTrip(ruby, "non-BMP ruby base")
+	let tcy = NSMutableAttributedString(string: "あ1\n2い")
+	tcy.addAttribute(PorticoTateChuYoko.overrideKey,
+	                 value: PorticoTateChuYoko.Override(.combine),
+	                 range: NSRange(location: 1, length: 3))
+	assertRoundTrip(tcy, "newline inside a combine payload")
 }
 
 // MARK: - (4) Aozora: quarantined, one-way

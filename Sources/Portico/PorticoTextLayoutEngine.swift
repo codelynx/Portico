@@ -89,11 +89,22 @@ public class PorticoTextLayoutEngine {
 		} else {
 			attributes = typingAttributes
 		}
-		// 縦中横 override never extends by typing at its boundary (ruby's
-		// group-boundary rule, same rationale: the annotation is an artist's
-		// range-scoped intent, not a typing mode).
-		attributes.removeValue(forKey: PorticoTateChuYoko.overrideKey)
 		return attributes
+	}
+
+	/// True when an insertion at `location` (replacing `length` chars) lands strictly inside a
+	/// single 縦中横 override span — the chars on both sides carry the SAME `Override` box (identity,
+	/// not equality: same box keeps it one run) — so inserted text extends the span. At a span
+	/// boundary this is false and the insertion is plain (ruby's attribute-edge rule, same
+	/// rationale — see `insertionExtendsRubyGroup`; review fold pinned interior-extend as parity).
+	private func insertionExtendsOverrideSpan(at location: Int, replacing length: Int, in string: NSAttributedString) -> Bool {
+		let beforeIndex = location - 1
+		let afterIndex = location + length
+		guard beforeIndex >= 0, afterIndex < string.length else { return false }
+		guard let before = string.attribute(PorticoTateChuYoko.overrideKey, at: beforeIndex, effectiveRange: nil) as? PorticoTateChuYoko.Override,
+			  let after = string.attribute(PorticoTateChuYoko.overrideKey, at: afterIndex, effectiveRange: nil) as? PorticoTateChuYoko.Override
+		else { return false }
+		return before === after
 	}
 	/// Framework-internal (set by `PorticoView`, **not** part of the client observation API): fired
 	/// after every content relayout so the view repaints on engine-driven changes it didn't
@@ -375,6 +386,10 @@ public class PorticoTextLayoutEngine {
 		if !insertionExtendsRubyGroup(at: targetRange.location, replacing: targetRange.length, in: mutableString) {
 			markedAttrs.removeValue(forKey: PorticoRuby.rubyKey)
 		}
+		// Same edge rule for 縦中横 overrides: extend strictly inside, plain at a boundary.
+		if !insertionExtendsOverrideSpan(at: targetRange.location, replacing: targetRange.length, in: mutableString) {
+			markedAttrs.removeValue(forKey: PorticoTateChuYoko.overrideKey)
+		}
 
 		let insertedString = NSAttributedString(string: text, attributes: markedAttrs)
 		mutableString.replaceCharacters(in: targetRange, with: insertedString)
@@ -527,6 +542,10 @@ public class PorticoTextLayoutEngine {
 		if !insertionExtendsRubyGroup(at: targetRange.location, replacing: targetRange.length, in: mutableString) {
 			cleanAttrs.removeValue(forKey: PorticoRuby.rubyKey)
 		}
+		// Same edge rule for 縦中横 overrides: extend strictly inside, plain at a boundary.
+		if !insertionExtendsOverrideSpan(at: targetRange.location, replacing: targetRange.length, in: mutableString) {
+			cleanAttrs.removeValue(forKey: PorticoTateChuYoko.overrideKey)
+		}
 
 		let insertedString = NSAttributedString(string: text, attributes: cleanAttrs)
 		mutableString.replaceCharacters(in: targetRange, with: insertedString)
@@ -633,6 +652,8 @@ public class PorticoTextLayoutEngine {
 		var contextAttrs = inheritedAttributes(at: pasteTarget, in: attributedString)
 		contextAttrs.removeValue(forKey: NSAttributedString.Key(kCTUnderlineStyleAttributeName as String))
 		contextAttrs.removeValue(forKey: PorticoRuby.rubyKey)
+		// Pasted notation carries its own annotations; never inherit an override from the context.
+		contextAttrs.removeValue(forKey: PorticoTateChuYoko.overrideKey)
 		insertAttributedText(PorticoRuby.parse(notation, attributes: contextAttrs))
 	}
 
@@ -657,6 +678,11 @@ public class PorticoTextLayoutEngine {
 	/// (§7a) as its **own** undo step — the typing run is closed first, so undo #1 reverts the
 	/// conversion to the literal `《》` characters and undo #2 reverts the typing (design §4).
 	/// No-op when nothing closes a run.
+	///
+	/// Aozora posture (0.6.0 review): this live conversion is a deliberate ONE-WAY IMPORT at
+	/// typing time — the same quarantine class as `PorticoNotation.parse(aozora:)`. Nothing ever
+	/// serializes back to `《》`; the clean-break claim is about representation, not input
+	/// convenience. Undo #1 restores the literal characters, so the conversion is always escapable.
 	///
 	/// Note: on the converting keystroke, `textDidChange` fires **twice** — once for the literal
 	/// notation (from `insertText`) and once for the converted group (here). Both are synchronous

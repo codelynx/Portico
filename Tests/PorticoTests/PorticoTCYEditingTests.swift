@@ -216,6 +216,11 @@ private func relayout(_ engine: PorticoTextLayoutEngine) {
 	// mini-line gap — left edge → before the group, right edge → after,
 	// center → BETWEEN the digits (real-editor behavior; interior gaps
 	// must be reachable for 3+-length combines).
+	// EQUIVALENCE (review fold): for 2-char groups the only interior gap
+	// sits at the cell's midpoint, so gap-resolution and the v1 nearer-
+	// boundary snap pick the same index for every tap — the device-
+	// witnessed v1 behavior (W2) is preserved, not regressed; this rewrite
+	// only ADDS the interior gaps longer groups need.
 	let engine = editEngine("あ12う")
 	guard let cell = engine.tateChuYokoCell(for: NSRange(location: 1, length: 2)) else {
 		Issue.record("cell missing"); return

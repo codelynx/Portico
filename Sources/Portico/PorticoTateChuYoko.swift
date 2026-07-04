@@ -47,7 +47,7 @@ public enum PorticoTateChuYoko {
 	/// the model — foundational invariant). `combine` forces any range
 	/// upright in one cell; `suppress` excludes an auto pair. Precedence:
 	/// suppress > combine > automatic; ruby beats all.
-	public static let overrideKey = NSAttributedString.Key("PorticoTateChuYokoOverride")
+	public nonisolated static let overrideKey = NSAttributedString.Key("PorticoTateChuYokoOverride")
 
 	/// IDENTITY-boxed (review Major, load-bearing): NSAttributedString
 	/// COALESCES adjacent runs with `isEqual` values — a plain enum would
@@ -109,6 +109,9 @@ public enum PorticoTateChuYoko {
 	///   3. suppress contributes no group;
 	///   4. combine contributes its non-ruby fragments.
 	/// GUARANTEE: sorted, non-overlapping output.
+	/// (No `− suppressed` term on 4: suppress and combine share ONE
+	/// attribute key, so their runs cannot overlap by construction — an
+	/// NSAttributedString stores one value per position.)
 	static func effectiveGroups(in attributed: NSAttributedString) -> [NSRange] {
 		let ruby = genuineRubyRanges(in: attributed)
 		var combines: [NSRange] = []
@@ -139,8 +142,10 @@ public enum PorticoTateChuYoko {
 		return normalized
 	}
 
-	/// `range` minus every range in `cuts`, as sorted fragments.
-	private static func subtract(_ cuts: [NSRange], from range: NSRange) -> [NSRange] {
+	/// `range` minus every range in `cuts`, as sorted fragments. Internal:
+	/// `PorticoNotation.serialize` reuses it so the encoded fragments are
+	/// the SAME `combine − ruby` algebra the layout derives.
+	static func subtract(_ cuts: [NSRange], from range: NSRange) -> [NSRange] {
 		var fragments = [range]
 		for cut in cuts {
 			var next: [NSRange] = []

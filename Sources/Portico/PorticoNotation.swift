@@ -19,11 +19,17 @@
 //  payloads alike — one uniform rule, trivially round-trippable. On parse,
 //  backslash + ANY character yields that character literally; a trailing
 //  lone backslash is a literal backslash. An unescaped `[[` opens a
-//  command; unknown keywords, empty payloads, unterminated commands, and
-//  nested unescaped `[[` all FAIL SAFE: the tentative command re-emits as
-//  literal text (content is never destroyed by malformed markup). Nesting
-//  is not expressible (grammar-level refusal, matching the model's
-//  precedence rule).
+//  command; unknown keywords, empty payloads, stray pipes (a second bare
+//  `|` in ruby, any bare `|` in tcy), unterminated commands, and nested
+//  unescaped `[[` all FAIL SAFE: the ENTIRE tentative region — from the
+//  opener through the first unescaped `]]` (or end of input) — re-emits as
+//  raw literal text carrying ZERO annotations (review blocker: a malformed
+//  command must never let an inner command annotate). Content is never
+//  destroyed by malformed markup; a malformed opener may swallow a later
+//  valid command into literal text, which is the safe direction. Nesting is
+//  not expressible (grammar-level refusal, matching the model's precedence
+//  rule). Newlines and non-BMP characters are NOT metacharacters — they
+//  pass through text and payloads unescaped.
 //
 
 import CoreText
@@ -35,8 +41,12 @@ public enum PorticoNotation {
 
 	/// Encode `attributed` to notation. Ruby and 縦中横 OVERRIDE spans carry
 	/// commands; everything else (including automatic 縦中横 groups) is
-	/// plain escaped text. A 縦中横 override overlapping a ruby range is
-	/// DROPPED (ruby wins — nesting is not expressible).
+	/// plain escaped text. A 縦中横 override overlapping a ruby base emits
+	/// only its NON-ruby fragments (ruby wins; nesting is not expressible) —
+	/// the exact `combine − ruby` algebra `effectiveGroups` derives from, so
+	/// the encoding stays faithful to what the model renders (review
+	/// blocker: whole-span drop lost the surviving fragments). A span wholly
+	/// under ruby emits nothing.
 	@MainActor
 	public static func serialize(_ attributed: NSAttributedString) -> String {
 		let full = NSRange(location: 0, length: attributed.length)
@@ -53,13 +63,13 @@ public enum PorticoNotation {
 		}
 		attributed.enumerateAttribute(PorticoTateChuYoko.overrideKey, in: full) { value, range, _ in
 			guard let override = value as? PorticoTateChuYoko.Override else { return }
-			// Ruby wins: a TCY override overlapping any ruby base is dropped.
-			guard !rubyRanges.contains(where: { NSIntersectionRange($0.base, range).length > 0 })
-			else { return }
 			let keyword = override.kind == .combine ? "tcy" : "tcy-off"
-			spans.append(Span(
-				range: range,
-				command: "[[\(keyword):\(escape(text.substring(with: range)))]]"))
+			for fragment in PorticoTateChuYoko.subtract(rubyRanges.map(\.base), from: range)
+			where fragment.length > 0 {
+				spans.append(Span(
+					range: fragment,
+					command: "[[\(keyword):\(escape(text.substring(with: fragment)))]]"))
+			}
 		}
 		spans.sort { $0.range.location < $1.range.location }
 
@@ -122,30 +132,29 @@ public enum PorticoNotation {
 				continue
 			}
 			if c == "[", i + 1 < scalars.count, scalars[i + 1] == "[" {
-				// Tentative command. Snapshot for fail-safe literal re-emit.
+				// Tentative command: scan the WHOLE region first (keyword,
+				// colon, payload, terminator), validate after. On ANY
+				// failure the ENTIRE region — opener through the first
+				// unescaped "]]", or end of input — re-emits as RAW literal
+				// text with zero annotations (review blocker: recovering at
+				// start+2 let an inner command annotate from inside a
+				// malformed one).
 				let start = i
 				i += 2
-				// keyword up to ':'
 				var keyword = ""
-				while i < scalars.count, scalars[i] != ":" {
-					// keywords are plain ASCII identifiers; anything weird
-					// (incl. '[', ']', '\\', '|') = malformed
-					let k = scalars[i]
-					if k.isLetter || k == "-" { keyword.append(k); i += 1 } else { break }
+				while i < scalars.count, scalars[i].isLetter || scalars[i] == "-" {
+					keyword.append(scalars[i]); i += 1
 				}
-				let knownRuby = keyword == "ruby"
-				let knownTCY = keyword == "tcy" || keyword == "tcy-off"
-				guard (knownRuby || knownTCY), i < scalars.count, scalars[i] == ":" else {
-					// fail safe: literal "[["
-					plain.append("[["); i = start + 2
-					continue
-				}
-				i += 1 // past ':'
-				// payload until unescaped "]]"; unescaped "[[" inside = malformed
+				let hasColon = i < scalars.count && scalars[i] == ":"
+				if hasColon { i += 1 }
+				var malformed = !hasColon
+					|| !(keyword == "ruby" || keyword == "tcy" || keyword == "tcy-off")
+				// payload until unescaped "]]"; nesting and stray pipes mark
+				// malformed but scanning CONTINUES to the terminator so the
+				// whole region is known.
 				var payload = ""
 				var pipeOffset: Int? = nil
 				var terminated = false
-				var malformed = false
 				while i < scalars.count {
 					let p = scalars[i]
 					if p == "\\" {
@@ -157,10 +166,13 @@ public enum PorticoNotation {
 						terminated = true; i += 2; break
 					}
 					if p == "[", i + 1 < scalars.count, scalars[i + 1] == "[" {
-						malformed = true; break // nesting refused
+						malformed = true // nesting refused
+						payload.append("[["); i += 2
+						continue
 					}
-					if p == "|", pipeOffset == nil {
-						pipeOffset = (payload as NSString).length
+					if p == "|" {
+						if pipeOffset == nil { pipeOffset = (payload as NSString).length }
+						else { malformed = true } // a second bare pipe is malformed
 						payload.append(p); i += 1
 						continue
 					}
@@ -170,7 +182,7 @@ public enum PorticoNotation {
 				let valid: Bool
 				if malformed || !terminated {
 					valid = false
-				} else if knownRuby {
+				} else if keyword == "ruby" {
 					// base|reading, both non-empty
 					if let pipe = pipeOffset, pipe > 0, pipe + 1 < ns.length { valid = true }
 					else { valid = false }
@@ -178,10 +190,12 @@ public enum PorticoNotation {
 					valid = ns.length > 0 && pipeOffset == nil
 				}
 				guard valid else {
-					// fail safe: the whole tentative command re-emits literally
-					plain.append("[["); i = start + 2
+					// fail safe: the whole tentative region re-emits RAW
+					// (backslashes as typed — visible, recoverable).
+					plain.append(contentsOf: scalars[start..<i])
 					continue
 				}
+				let knownRuby = keyword == "ruby"
 				if knownRuby {
 					let pipe = pipeOffset!
 					let base = ns.substring(to: pipe)

@@ -177,9 +177,9 @@ public enum PorticoRuby {
 	/// reading is stored **as given** (trimming only decides removal; kana normalization is
 	/// the client's call).
 	///
-	/// Note: readings or base text containing literal Aozora markup (`《`, `》`, `｜`) are
-	/// stored fine but are outside the serialize/parse round-trip guarantee until escaping
-	/// exists (design §9); no validation is performed.
+	/// Note: readings or base text may contain any characters (`PorticoNotation`'s uniform
+	/// escaping round-trips them); the legacy Aozora path (`PorticoRuby.serialize`/`parse`)
+	/// still has no escaping and remains a one-way import concern only.
 	public static func setRuby(_ reading: String?, for baseRange: NSRange, in attributed: NSMutableAttributedString) {
 		guard baseRange.length > 0,
 			  baseRange.location >= 0,
@@ -195,6 +195,12 @@ public enum PorticoRuby {
 		// Apply the reading as-given, unless it's blank (nil/empty/whitespace → remove only).
 		if let reading, !reading.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
 			addRuby(reading, to: baseRange, in: attributed)
+			// Surgery symmetry (review fold): `setTateChuYoko` clears what it
+			// overlaps; ruby does the same in the other direction — a 縦中横
+			// override never stays stored UNDER a ruby base (ruby wins). The
+			// span's fragments outside the base survive untouched, matching
+			// the `combine − ruby` algebra everywhere else.
+			attributed.removeAttribute(PorticoTateChuYoko.overrideKey, range: baseRange)
 		}
 	}
 
