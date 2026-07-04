@@ -1,4 +1,4 @@
-# 縦中横 override — per-range attribute, ruby-style (design DRAFT → Portico 0.6.0)
+# 縦中横 override — per-range attribute, ruby-style (REV 2, review folded → Portico 0.6.0)
 
 Owner-initiated (2026-07-04, after v1 shipped): the automatic rule covers the dominant
 manga cases, but artists need intent control the rule can't infer — force-combine a
@@ -15,8 +15,20 @@ One attribute key, ruby's shape:
 
 ```swift
 PorticoTateChuYoko.overrideKey   // NSAttributedString.Key("PorticoTateChuYokoOverride")
-enum TateChuYokoOverride: combine | suppress
+// REV 2 (review Major, load-bearing): the value is a CLASS-BOXED object
+// carrying per-application IDENTITY, not a plain enum — NSAttributedString
+// COALESCES adjacent runs with equal values, so a bare enum would merge an
+// artist's "12"+"34" into one "1234" cell. Ruby dodges this only by the
+// accident of CTRubyAnnotation reference identity; the parity must be
+// deliberate here.
+final class TateChuYokoOverride { enum Kind { case combine, suppress }; let kind: Kind }
 ```
+
+**Range surgery (review fold):** `setTateChuYoko(_:for:)` CLEARS/TRIMS intersecting
+override spans before applying (ruby's range-surgery template); a partial overlap
+replaces the intersection cleanly. **Nesting is explicitly REJECTED in v1** — no ruby
+inside a combine or vice versa (precedence handles overlap; the grammar below also
+refuses to express nesting, avoiding parse/serialize asymmetry).
 
 - **`combine`** — the range renders as ONE upright cell in vertical text, regardless of
   the automatic rule (this is how "123" or "'26" get combined). Any length ≥ 1;
@@ -34,8 +46,13 @@ enum TateChuYokoOverride: combine | suppress
 ## Group derivation becomes one pure function
 
 ```
-effectiveGroups(text, rubyRanges, overrides) =
-    (automatic(text) − suppressed − rubyRanges) ∪ (combineRanges − rubyRanges)
+effectiveGroups (REV 2, normalized — review Major):
+  1. ruby ranges remove first;
+  2. ANY explicit override MASKS every intersecting automatic group;
+  3. suppress contributes no group;
+  4. combine contributes its non-ruby fragments.
+  GUARANTEE: sorted, non-overlapping output (a combine over "1" next to auto
+  "12" can't yield overlapping [0,2]+[0,1]).
 ```
 
 Everything downstream (reservation, mini-line draw, ink, caret, selection, wordRange,
@@ -91,31 +108,48 @@ annotation type needs new punctuation.
 ```
 [[ruby:漢字|かんじ]]     ruby
 [[tcy:123]]              force-combine
-[[tcy/:12]]              suppress-combine
+[[tcy-off:12]]           suppress-combine (REV 2: was [[tcy/:12]] — all three
+                         reviewers rejected the bare slash as parser punctuation
+                         leaking into authoring; -off is greppable and readable)
 future: [[em:強調]] (圏点), [[warichu:…]], …
 ```
 
 - **One grammar, open namespace** — new annotation kinds cost a keyword, not new
   punctuation (the pixiv insight, generalized).
 - **Explicit base** — no implicit base-detection heuristics (the `｜` hack dies).
-- **Escapable by design** — literal `[[` escapes as `\[[`; closes gap 9 for the new
-  format instead of inheriting it.
+- **Escapable by design — FULL grammar spec required at PR-2 entry (review fold)**:
+  escapes for `\[[`, `\]]`, `\|`, `\\`; defined behavior for malformed commands,
+  trailing backslash, and nested-command refusal. Round-trip PROPERTY tests written
+  FIRST (serialize∘parse = identity over payloads containing `[[`, `|`, `]]`, mixed
+  ruby+tcy) — Aozora-Portico's one great property, proven before anything rides on it.
+- **The ecosystem argument (review fold)**: pixiv's `[[rb:…]]` proves double-bracket
+  span grammar is already native to Japanese amateur writing — this is the ecosystem's
+  own convention with a cleaner separator, not engineer-brackets imposed on JP prose.
+  (LaTeX-style has a JP-specific strike: on JIS keyboards backslash IS the ¥ key.)
 - **ASCII delimiters** — typeable on any keyboard, greppable, diff-friendly; the
   payload stays Japanese.
-- Pre-1.0 no-migration posture: `serialize` emits ONLY the new grammar;
-  `parse` may keep Aozora `《》` acceptance as an IMPORT convenience (decide at
-  review — owner antipathy may argue for a clean break).
+- Pre-1.0 no-migration posture (REV 2, review-unanimous): `serialize` emits ONLY the
+  new grammar; the DEFAULT `parse` is a clean break (carrying `《》` in the default
+  path would smuggle gap 9's no-escaping disease into the new era). Aozora survives
+  as a separate, explicitly-named import entry point (`parse(aozora:)`) — a
+  quarantined conversion utility for existing corpora.
+- **The notation surface gets its own type (review fold): `PorticoNotation`** —
+  serialize/parse for ALL annotations; `PorticoRuby`-named entry points remain as
+  compatibility sugar only.
 
 Auto-detected TCY groups still serialize as PLAIN TEXT (automatic means automatic;
 only overrides carry notation).
 
 ## Example app
 
-"縦中横" joins "Ruby…" through the SAME `PorticoSelectionMenuAction` seam — which today
-carries exactly ONE action. The seam grows to an ARRAY (`onSelectionMenuActions:
-[PorticoSelectionMenuAction]`, old single-action init kept as a convenience) — a small
-breaking-adjacent change fenced to 0.6.0. The Example wires both actions; the TCY one
-needs no popover (it's a toggle), making it the seam's simplest possible demo.
+"縦中横" joins "Ruby…" through the menu seam — which grows to an **action PROVIDER**
+(REV 2, review fold): actions are evaluated AT MENU-OPEN TIME with the selection
+context, because the TCY title is state-dependent ("縦中横" / "縦中横を解除"). The old
+single-action init wraps the provider. Toggle semantics (review fold): mixed-state
+selection resolves APPLY-WINS (bold-editor convention — applying normalizes the whole
+selection into one span); choosing 縦中横 on a suppressed range REMOVES the suppress
+(never a suppress-still-wins surprise). The Example wires both actions; the TCY one
+needs no popover.
 
 ## Interactions audited
 
@@ -133,22 +167,23 @@ needs no popover (it's a toggle), making it the seam's simplest possible demo.
 
 ## Slices (Portico 0.6.0)
 
-1. **PR-1** — attribute + `effectiveGroups` derivation + editing semantics (boundary
-   non-extension, undo, setTateChuYoko) + generalized stand-in. Rule/measure/editing
-   test matrix incl. suppress-over-auto and combine-of-3.
+1. **PR-1** — identity-boxed attribute + normalized `effectiveGroups` + range surgery
+   + editing semantics + generalized stand-in **with its own force-wrap sweep** (the
+   [ID][NS][NS]… no-break argument is plausible; this arc doesn't ship plausible).
+   Test matrix: suppress-over-auto, combine-of-1/2/3/5+/ugly-long, ADJACENT combines
+   stay distinct cells (the coalescing pin), 3+ interaction rows (interior tap snaps
+   to the NEAREST mini-glyph boundary — the half rule generalizes; caret/selection/
+   wordRange/delete/undo at 3+).
 2. **PR-2** — the NEW notation: `[[…]]` grammar parse/serialize for ruby AND tcy,
    escaping, round-trip + leak gates; decide Aozora-parse-compat at review.
 3. **PR-3** — multi-action menu seam + Example wiring (macOS + iOS) + 0.6.0 release.
 
-## Open questions for review
+## OQ resolutions (review round, 2026-07-04 — all unanimous)
 
-- **OQ-A (menu toggle semantics)**: one state-dependent item vs two items
-  ("縦中横" / "解除"). Draft: one, ruby-pattern.
-- **OQ-B (suppress persistence)**: `suppress` on an auto pair persists as `〈/12〉` —
-  or should suppress be modeled as "combine-range of length 0"… no: explicit enum is
-  clearer. Confirm the two-state enum.
-- **OQ-C (combine length cap)**: none (compression handles; artist's choice) vs cap at
-  ~4 with a beep. Draft: none.
-- **OQ-D (menu availability)**: horizontal orientation — hide the menu item, or allow
-  (attribute inert until the object flips vertical)? Draft: allow + inert (the artist
-  may flip orientation later; losing the intent would surprise).
+- **OQ-A ✅ one state-dependent toggle** (+ the apply-wins mixed-state rule above).
+- **OQ-B ✅ two-state enum** (identity-boxed per the coalescing Major); rotate deferred.
+- **OQ-C ✅ no cap** — WYSIWYG is the feedback; a cap encodes JIS taste into a tool
+  whose users deliberately break type rules. Ugly-long-run tests fail safely.
+- **OQ-D ✅ available-and-inert in horizontal** — intent survives orientation flips
+  (alignment/pitch precedent); a hidden item would make the attribute a phantom state.
+  Menu help text: "applies in vertical text".
