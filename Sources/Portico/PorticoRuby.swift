@@ -106,6 +106,23 @@ public enum PorticoRuby {
 	/// so base text containing literal `《`, `》`, or `｜` cannot round-trip (see spec §3.1);
 	/// `parse` never produces such bases, so its output always round-trips.
 	public static func serialize(_ attributed: NSAttributedString) -> String {
+		// Data-loss tripwire (release review): the legacy Aozora form CANNOT
+		// carry 縦中横 overrides — a host serializing override-bearing content
+		// through this path drops them silently (the exact hazard MangaLoft's
+		// commit path has until it adopts PorticoNotation). Debug-only so the
+		// day a host wires a TCY authoring surface without switching its
+		// persistence, something FIRES instead of nothing.
+		#if DEBUG
+		var carriesOverride = false
+		attributed.enumerateAttribute(
+			PorticoTateChuYoko.overrideKey,
+			in: NSRange(location: 0, length: attributed.length)
+		) { value, _, stop in
+			if value != nil { carriesOverride = true; stop.pointee = true }
+		}
+		assert(!carriesOverride,
+		       "PorticoRuby.serialize is the legacy Aozora path and drops 縦中横 overrides — serialize this content via PorticoNotation.serialize")
+		#endif
 		let full = attributed.string as NSString
 		var result = ""
 		var precedingPlain = "" // plain base text since the last ruby group, for the auto-form check
@@ -177,9 +194,9 @@ public enum PorticoRuby {
 	/// reading is stored **as given** (trimming only decides removal; kana normalization is
 	/// the client's call).
 	///
-	/// Note: readings or base text containing literal Aozora markup (`《`, `》`, `｜`) are
-	/// stored fine but are outside the serialize/parse round-trip guarantee until escaping
-	/// exists (design §9); no validation is performed.
+	/// Note: readings or base text may contain any characters (`PorticoNotation`'s uniform
+	/// escaping round-trips them); the legacy Aozora path (`PorticoRuby.serialize`/`parse`)
+	/// still has no escaping and remains a one-way import concern only.
 	public static func setRuby(_ reading: String?, for baseRange: NSRange, in attributed: NSMutableAttributedString) {
 		guard baseRange.length > 0,
 			  baseRange.location >= 0,
@@ -195,6 +212,12 @@ public enum PorticoRuby {
 		// Apply the reading as-given, unless it's blank (nil/empty/whitespace → remove only).
 		if let reading, !reading.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
 			addRuby(reading, to: baseRange, in: attributed)
+			// Surgery symmetry (review fold): `setTateChuYoko` clears what it
+			// overlaps; ruby does the same in the other direction — a 縦中横
+			// override never stays stored UNDER a ruby base (ruby wins). The
+			// span's fragments outside the base survive untouched, matching
+			// the `combine − ruby` algebra everywhere else.
+			attributed.removeAttribute(PorticoTateChuYoko.overrideKey, range: baseRange)
 		}
 	}
 
@@ -224,6 +247,47 @@ public enum PorticoRuby {
 
 	private static func isLineBreakUnit(_ u: unichar) -> Bool {
 		u == 0x000A || u == 0x000D || u == 0x2028 || u == 0x2029
+	}
+
+	/// One-way Aozora import over an already-attributed string — the PASTE boundary (0.6.0
+	/// owner ruling: paste imports `《》`, default typing does not). Converts every complete
+	/// `[｜]base《reading》` run to a ruby group, preserving the base's other attributes.
+	/// Scans back-to-front so earlier ranges stay valid as marks are removed.
+	///
+	/// ANNOTATION GUARD (release-review blocker): a match whose source range intersects an
+	/// EXISTING annotation — ruby or a 縦中横 override, i.e. anything the owned-grammar parse
+	/// just authored — is SKIPPED entirely. The `isRuby` exclusion alone only limits the
+	/// auto-base walk; an explicit `｜` base deliberately crosses ruby (right for live typing,
+	/// wrong here), so without this guard pasted owned notation like
+	/// `[[ruby:｜漢字《かんじ》|old]]` would be rewritten by the legacy importer.
+	static func importAozora(in mutable: NSMutableAttributedString) {
+		func intersectsAnnotation(_ range: NSRange) -> Bool {
+			var found = false
+			for key in [rubyKey, PorticoTateChuYoko.overrideKey] {
+				mutable.enumerateAttribute(key, in: range) { value, _, stop in
+					if value != nil { found = true; stop.pointee = true }
+				}
+				if found { break }
+			}
+			return found
+		}
+		var index = (mutable.string as NSString).length - 1
+		while index >= 0 {
+			let ns = mutable.string as NSString
+			if ns.character(at: index) == rubyCloseUnit,
+			   let match = inlineRubyMatch(
+					in: ns, closingAt: index,
+					isRuby: { mutable.attribute(rubyKey, at: $0, effectiveRange: nil) != nil }),
+			   !intersectsAnnotation(match.sourceRange) {
+				let base = NSMutableAttributedString(
+					attributedString: mutable.attributedSubstring(from: match.baseRange))
+				setRuby(match.reading, for: NSRange(location: 0, length: base.length), in: base)
+				mutable.replaceCharacters(in: match.sourceRange, with: base)
+				index = match.sourceRange.location - 1
+			} else {
+				index -= 1
+			}
+		}
 	}
 
 	/// A complete inline ruby run `[｜]base《reading》`, detected at a just-typed `》`.

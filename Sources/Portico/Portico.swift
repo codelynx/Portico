@@ -15,13 +15,19 @@ public struct PorticoSelectionMenuAction {
 	}
 }
 
+/// Provider form of the selection-menu seam (0.6.0 PR-3): called AT MENU-OPEN TIME with the
+/// current selection and returns the actions to show, in order — so titles can be
+/// state-dependent ("縦中横" / "縦中横を解除"). The single-action `onSelectionMenuAction`
+/// parameters wrap into a one-element provider; pass `selectionMenuActions:` for the full form.
+public typealias PorticoSelectionMenuProvider = (NSRange) -> [PorticoSelectionMenuAction]
+
 #if os(macOS)
 public struct PorticoView: NSViewRepresentable {
 	private var textBinding: Binding<NSAttributedString>?
 	private var providedEngine: PorticoTextLayoutEngine?
 	private var orientation: PorticoLayoutOrientation?
 	private var selectedRange: Binding<NSRange?>?
-	private var onSelectionMenuAction: PorticoSelectionMenuAction?
+	private var selectionMenuProvider: PorticoSelectionMenuProvider?
 	/// Injected-engine hosts that open the editor programmatically (overlay
 	/// pattern) set this so typing lands in the editor without a click/tap.
 	private var focusesOnMount: Bool = false
@@ -31,11 +37,12 @@ public struct PorticoView: NSViewRepresentable {
 	/// teardown, use `init(engine:)` and retain the engine yourself.
 	public init(text: Binding<NSAttributedString>, orientation: PorticoLayoutOrientation = .horizontal,
 				selectedRange: Binding<NSRange?>? = nil,
-				onSelectionMenuAction: PorticoSelectionMenuAction? = nil) {
+				onSelectionMenuAction: PorticoSelectionMenuAction? = nil,
+				selectionMenuActions: PorticoSelectionMenuProvider? = nil) {
 		self.textBinding = text
 		self.orientation = orientation
 		self.selectedRange = selectedRange
-		self.onSelectionMenuAction = onSelectionMenuAction
+		self.selectionMenuProvider = selectionMenuActions ?? onSelectionMenuAction.map { action in { _ in [action] } }
 	}
 
 	/// Model mode: the **client owns the engine** (its text, undo stack, and lifecycle), so undo is
@@ -50,11 +57,12 @@ public struct PorticoView: NSViewRepresentable {
 	public init(engine: PorticoTextLayoutEngine, orientation: PorticoLayoutOrientation? = nil,
 				selectedRange: Binding<NSRange?>? = nil,
 				onSelectionMenuAction: PorticoSelectionMenuAction? = nil,
+				selectionMenuActions: PorticoSelectionMenuProvider? = nil,
 				focusesOnMount: Bool = false) {
 		self.providedEngine = engine
 		self.orientation = orientation
 		self.selectedRange = selectedRange
-		self.onSelectionMenuAction = onSelectionMenuAction
+		self.selectionMenuProvider = selectionMenuActions ?? onSelectionMenuAction.map { action in { _ in [action] } }
 		self.focusesOnMount = focusesOnMount
 	}
 
@@ -73,13 +81,13 @@ public struct PorticoView: NSViewRepresentable {
 			engine.selectionDidChange = { range in DispatchQueue.main.async { selectionBinding.wrappedValue = range } }
 		}
 		let view = PorticoTextView(frame: .zero, layoutEngine: engine)
-		view.onSelectionMenuAction = onSelectionMenuAction
+		view.selectionMenuProvider = selectionMenuProvider
 		view.focusesOnMount = focusesOnMount
 		return view
 	}
 
 	public func updateNSView(_ nsView: PorticoTextView, context: Context) {
-		nsView.onSelectionMenuAction = onSelectionMenuAction // refresh each render to avoid a stale closure
+		nsView.selectionMenuProvider = selectionMenuProvider // refresh each render to avoid a stale closure
 		let engine = nsView.layoutEngine
 		// Only the binding (text:) mode syncs external text into the engine (a document reset).
 		// Injected-engine mode never does — that's the client's model, and a reset would clear undo.
@@ -99,7 +107,7 @@ public struct PorticoView: UIViewRepresentable {
 	private var providedEngine: PorticoTextLayoutEngine?
 	private var orientation: PorticoLayoutOrientation?
 	private var selectedRange: Binding<NSRange?>?
-	private var onSelectionMenuAction: PorticoSelectionMenuAction?
+	private var selectionMenuProvider: PorticoSelectionMenuProvider?
 	/// Injected-engine hosts that open the editor programmatically (overlay
 	/// pattern) set this so typing lands in the editor without a click/tap.
 	private var focusesOnMount: Bool = false
@@ -109,11 +117,12 @@ public struct PorticoView: UIViewRepresentable {
 	/// `init(engine:)` and retain the engine yourself.
 	public init(text: Binding<NSAttributedString>, orientation: PorticoLayoutOrientation = .horizontal,
 				selectedRange: Binding<NSRange?>? = nil,
-				onSelectionMenuAction: PorticoSelectionMenuAction? = nil) {
+				onSelectionMenuAction: PorticoSelectionMenuAction? = nil,
+				selectionMenuActions: PorticoSelectionMenuProvider? = nil) {
 		self.textBinding = text
 		self.orientation = orientation
 		self.selectedRange = selectedRange
-		self.onSelectionMenuAction = onSelectionMenuAction
+		self.selectionMenuProvider = selectionMenuActions ?? onSelectionMenuAction.map { action in { _ in [action] } }
 	}
 
 	/// Model mode: the **client owns the engine** (text, undo, lifecycle), so undo is model-scoped
@@ -129,11 +138,12 @@ public struct PorticoView: UIViewRepresentable {
 	public init(engine: PorticoTextLayoutEngine, orientation: PorticoLayoutOrientation? = nil,
 				selectedRange: Binding<NSRange?>? = nil,
 				onSelectionMenuAction: PorticoSelectionMenuAction? = nil,
+				selectionMenuActions: PorticoSelectionMenuProvider? = nil,
 				focusesOnMount: Bool = false) {
 		self.providedEngine = engine
 		self.orientation = orientation
 		self.selectedRange = selectedRange
-		self.onSelectionMenuAction = onSelectionMenuAction
+		self.selectionMenuProvider = selectionMenuActions ?? onSelectionMenuAction.map { action in { _ in [action] } }
 		self.focusesOnMount = focusesOnMount
 	}
 
@@ -152,13 +162,13 @@ public struct PorticoView: UIViewRepresentable {
 			engine.selectionDidChange = { range in DispatchQueue.main.async { selectionBinding.wrappedValue = range } }
 		}
 		let view = PorticoTextView(frame: .zero, layoutEngine: engine)
-		view.onSelectionMenuAction = onSelectionMenuAction
+		view.selectionMenuProvider = selectionMenuProvider
 		view.focusesOnMount = focusesOnMount
 		return view
 	}
 
 	public func updateUIView(_ uiView: PorticoTextView, context: Context) {
-		uiView.onSelectionMenuAction = onSelectionMenuAction // refresh each render to avoid a stale closure
+		uiView.selectionMenuProvider = selectionMenuProvider // refresh each render to avoid a stale closure
 		let engine = uiView.layoutEngine
 		// Only the binding (text:) mode syncs external text into the engine (a document reset).
 		// Injected-engine mode never does — resetting a client's model would clear its undo stack.

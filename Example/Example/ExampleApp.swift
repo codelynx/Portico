@@ -48,14 +48,19 @@ struct ExampleApp: App {
 					.disabled(engine == nil || engine?.markedRange != nil)
 			}
 			#if os(macOS)
-			// Discoverable macOS entry point (⇧⌘R) beside the right-click item — sends the action up
-			// the responder chain to the focused PorticoTextView, which fires its onSelectionMenuAction
-			// (no-ops when there's no selection). iOS reaches the same action via the native edit menu.
+			// Discoverable macOS entry points beside the right-click items. Ruby… (⇧⌘R) sends the
+			// selector up the responder chain to the focused PorticoTextView; a bare send (no menu
+			// item index) invokes the provider's FIRST action, which is Ruby…. 縦中横 (⇧⌘T) drives
+			// the engine API directly — its title needs the menu-open selection state, which the
+			// bridged engine gives us for free. iOS reaches both via the native edit menu.
 			CommandGroup(after: .pasteboard) {
 				Button("Ruby…") {
 					NSApp.sendAction(#selector(PorticoTextView.performSelectionMenuAction(_:)), to: nil, from: nil)
 				}
 				.keyboardShortcut("r", modifiers: [.command, .shift])
+				Button(tateChuYokoTitle) { toggleTateChuYoko() }
+					.keyboardShortcut("t", modifiers: [.command, .shift])
+					.disabled(engine == nil || (engine?.selectionRange?.length ?? 0) == 0)
 			}
 			#endif
 		}
@@ -64,4 +69,18 @@ struct ExampleApp: App {
 	// Guard on markedRange to match the framework's own rule — don't undo mid-IME-composition.
 	private func undo() { if let engine, engine.markedRange == nil { engine.undoManager.undo() } }
 	private func redo() { if let engine, engine.markedRange == nil { engine.undoManager.redo() } }
+
+	#if os(macOS)
+	/// State-dependent verb, read at menu-open (like `.disabled` above): 解除 when the whole
+	/// selection already renders 縦中横, apply otherwise (mixed = apply-wins).
+	private var tateChuYokoTitle: String {
+		guard let engine, let selection = engine.selectionRange, selection.length > 0,
+			  engine.tateChuYokoToggle(for: selection) == .release else { return "縦中横" }
+		return "縦中横を解除"
+	}
+	private func toggleTateChuYoko() {
+		guard let engine, let selection = engine.selectionRange, selection.length > 0 else { return }
+		engine.performTateChuYokoToggle(for: selection)
+	}
+	#endif
 }

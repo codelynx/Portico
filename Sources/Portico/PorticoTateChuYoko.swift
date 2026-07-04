@@ -35,11 +35,31 @@ import CoreText
 import Foundation
 
 @MainActor
-enum PorticoTateChuYoko {
+public enum PorticoTateChuYoko {
 
 	/// Marker on the LAYOUT copy only: value = the group's text (String),
 	/// consumed by the draw post-pass. Never present on the backing store.
 	static let groupKey = NSAttributedString.Key("PorticoTateChuYokoGroup")
+
+	// MARK: - Per-range override (0.6.0 PR-1) — BACKING-STORE attribute
+
+	/// Artist-intent override on the BACKING store (the attributed string IS
+	/// the model — foundational invariant). `combine` forces any range
+	/// upright in one cell; `suppress` excludes an auto pair. Precedence:
+	/// suppress > combine > automatic; ruby beats all.
+	public nonisolated static let overrideKey = NSAttributedString.Key("PorticoTateChuYokoOverride")
+
+	/// IDENTITY-boxed (review Major, load-bearing): NSAttributedString
+	/// COALESCES adjacent runs with `isEqual` values — a plain enum would
+	/// merge an artist's separate "12" and "34" combines into one "1234"
+	/// cell. A class instance compares by identity, so each application
+	/// stays a distinct run. (Ruby dodges this only by CTRubyAnnotation's
+	/// accidental reference identity; here it is deliberate.)
+	public final class Override {
+		public enum Kind { case combine, suppress }
+		public let kind: Kind
+		public init(_ kind: Kind) { self.kind = kind }
+	}
 
 	// MARK: - Detection (pure)
 
@@ -80,6 +100,72 @@ enum PorticoTateChuYoko {
 	private static func isHalfWidthDigit(_ c: unichar) -> Bool { c >= 0x30 && c <= 0x39 } // 0-9
 	private static func isBangFamily(_ c: unichar) -> Bool { c == 0x21 || c == 0x3F } // ! ?
 
+	// MARK: - Effective groups (normalized algebra — review Major)
+
+	/// THE one derivation every consumer reads (reservation, draw, ink,
+	/// caret, selection, wordRange). Normalized (review fold):
+	///   1. ruby ranges exclude first (ruby wins over everything);
+	///   2. any explicit override MASKS every intersecting automatic group;
+	///   3. suppress contributes no group;
+	///   4. combine contributes its non-ruby fragments.
+	/// GUARANTEE: sorted, non-overlapping output.
+	/// (No `− suppressed` term on 4: suppress and combine share ONE
+	/// attribute key, so their runs cannot overlap by construction — an
+	/// NSAttributedString stores one value per position.)
+	static func effectiveGroups(in attributed: NSAttributedString) -> [NSRange] {
+		let ruby = genuineRubyRanges(in: attributed)
+		var combines: [NSRange] = []
+		var overrideRanges: [NSRange] = []
+		let full = NSRange(location: 0, length: attributed.length)
+		attributed.enumerateAttribute(overrideKey, in: full) { value, range, _ in
+			guard let override = value as? Override else { return }
+			overrideRanges.append(range)
+			if override.kind == .combine { combines.append(range) }
+		}
+
+		// 1+2: automatic groups, minus ruby, minus any override-touched group.
+		var result = groups(in: attributed.string, excluding: ruby).filter { auto in
+			!overrideRanges.contains { NSIntersectionRange($0, auto).length > 0 }
+		}
+		// 3+4: combine fragments outside ruby.
+		for combine in combines {
+			result.append(contentsOf: subtract(ruby, from: combine))
+		}
+		result.sort { $0.location < $1.location }
+		// Defensive non-overlap: stored overrides are surgery-normalized, but
+		// guarantee the contract regardless.
+		var normalized: [NSRange] = []
+		for range in result where range.length > 0 {
+			if let last = normalized.last, NSMaxRange(last) > range.location { continue }
+			normalized.append(range)
+		}
+		return normalized
+	}
+
+	/// `range` minus every range in `cuts`, as sorted fragments. Internal:
+	/// `PorticoNotation.serialize` reuses it so the encoded fragments are
+	/// the SAME `combine − ruby` algebra the layout derives.
+	static func subtract(_ cuts: [NSRange], from range: NSRange) -> [NSRange] {
+		var fragments = [range]
+		for cut in cuts {
+			var next: [NSRange] = []
+			for fragment in fragments {
+				let overlap = NSIntersectionRange(fragment, cut)
+				guard overlap.length > 0 else { next.append(fragment); continue }
+				if overlap.location > fragment.location {
+					next.append(NSRange(location: fragment.location,
+					                    length: overlap.location - fragment.location))
+				}
+				let tail = NSMaxRange(overlap)
+				if tail < NSMaxRange(fragment) {
+					next.append(NSRange(location: tail, length: NSMaxRange(fragment) - tail))
+				}
+			}
+			fragments = next
+		}
+		return fragments
+	}
+
 	// MARK: - Reservation (layout copy only)
 
 	/// One column cell's metrics, boxed for the run-delegate callbacks.
@@ -107,9 +193,9 @@ enum PorticoTateChuYoko {
 	/// em cell per group via CTRunDelegate + marker. Call ONLY on the layout
 	/// copy, only for vertical orientation.
 	static func applyReservations(to layoutString: NSMutableAttributedString) {
-		let excluded = genuineRubyRanges(in: layoutString)
+		_ = genuineRubyRanges(in: layoutString) // (kept for doc-symmetry; algebra below)
 		let text = layoutString.string
-		for group in groups(in: text, excluding: excluded) {
+		for group in effectiveGroups(in: layoutString) {
 			let fontSize = PorticoTextLayoutEngine.pointSize(
 				ofFontAttribute: layoutString.attribute(.font, at: group.location, effectiveRange: nil))
 			// PER-GLYPH advance (empirical pin 1): CT applies the delegate
@@ -164,7 +250,12 @@ enum PorticoTateChuYoko {
 			// CONTRACT: the no-split guarantee holds for inline extents ≥
 			// one character cell — sub-cell columns are degenerate for ALL
 			// text (MangaLoft floors boxText at 2× font size).
-			layoutString.replaceCharacters(in: group, with: "あ・")
+			// Generalized for any combine length: [ID][NS][NS]… — internally
+			// unbreakable, boundary-safe both sides (same classes as the pair
+			// case; PR-1 re-runs the force-wrap sweep over 3+).
+			layoutString.replaceCharacters(
+				in: group,
+				with: "あ" + String(repeating: "・", count: group.length - 1))
 		}
 	}
 

@@ -81,14 +81,30 @@ public class PorticoTextLayoutEngine {
 	private func inheritedAttributes(
 		at target: NSRange, in string: NSAttributedString
 	) -> [NSAttributedString.Key: Any] {
+		var attributes: [NSAttributedString.Key: Any]
 		if target.location > 0, target.location - 1 < string.length {
-			return string.attributes(at: target.location - 1, effectiveRange: nil)
+			attributes = string.attributes(at: target.location - 1, effectiveRange: nil)
+		} else if target.location + target.length < string.length {
+			attributes = string.attributes(at: target.location + target.length, effectiveRange: nil)
+		} else {
+			attributes = typingAttributes
 		}
-		let after = target.location + target.length
-		if after < string.length {
-			return string.attributes(at: after, effectiveRange: nil)
-		}
-		return typingAttributes
+		return attributes
+	}
+
+	/// True when an insertion at `location` (replacing `length` chars) lands strictly inside a
+	/// single 縦中横 override span — the chars on both sides carry the SAME `Override` box (identity,
+	/// not equality: same box keeps it one run) — so inserted text extends the span. At a span
+	/// boundary this is false and the insertion is plain (ruby's attribute-edge rule, same
+	/// rationale — see `insertionExtendsRubyGroup`; review fold pinned interior-extend as parity).
+	private func insertionExtendsOverrideSpan(at location: Int, replacing length: Int, in string: NSAttributedString) -> Bool {
+		let beforeIndex = location - 1
+		let afterIndex = location + length
+		guard beforeIndex >= 0, afterIndex < string.length else { return false }
+		guard let before = string.attribute(PorticoTateChuYoko.overrideKey, at: beforeIndex, effectiveRange: nil) as? PorticoTateChuYoko.Override,
+			  let after = string.attribute(PorticoTateChuYoko.overrideKey, at: afterIndex, effectiveRange: nil) as? PorticoTateChuYoko.Override
+		else { return false }
+		return before === after
 	}
 	/// Framework-internal (set by `PorticoView`, **not** part of the client observation API): fired
 	/// after every content relayout so the view repaints on engine-driven changes it didn't
@@ -370,6 +386,10 @@ public class PorticoTextLayoutEngine {
 		if !insertionExtendsRubyGroup(at: targetRange.location, replacing: targetRange.length, in: mutableString) {
 			markedAttrs.removeValue(forKey: PorticoRuby.rubyKey)
 		}
+		// Same edge rule for 縦中横 overrides: extend strictly inside, plain at a boundary.
+		if !insertionExtendsOverrideSpan(at: targetRange.location, replacing: targetRange.length, in: mutableString) {
+			markedAttrs.removeValue(forKey: PorticoTateChuYoko.overrideKey)
+		}
 
 		let insertedString = NSAttributedString(string: text, attributes: markedAttrs)
 		mutableString.replaceCharacters(in: targetRange, with: insertedString)
@@ -401,6 +421,13 @@ public class PorticoTextLayoutEngine {
 		}
 		textDidChange?(self.attributedString)
 		updateLayout()
+
+		// Commit-path parity (witness fold, V7): unmark IS a commit, so the
+		// inline conversion must fire here exactly as in insertText — Kotoeri
+		// can finalize a composition through unmark (click-confirm and some
+		// Enter flows), and without this the just-committed `》` never
+		// converts. Same undo shape: the conversion is its own step.
+		if importsAozoraRubyWhileTyping { applyInlineRubyConversion() }
 	}
 	
 	public enum MoveDirection {
@@ -522,6 +549,10 @@ public class PorticoTextLayoutEngine {
 		if !insertionExtendsRubyGroup(at: targetRange.location, replacing: targetRange.length, in: mutableString) {
 			cleanAttrs.removeValue(forKey: PorticoRuby.rubyKey)
 		}
+		// Same edge rule for 縦中横 overrides: extend strictly inside, plain at a boundary.
+		if !insertionExtendsOverrideSpan(at: targetRange.location, replacing: targetRange.length, in: mutableString) {
+			cleanAttrs.removeValue(forKey: PorticoTateChuYoko.overrideKey)
+		}
 
 		let insertedString = NSAttributedString(string: text, attributes: cleanAttrs)
 		mutableString.replaceCharacters(in: targetRange, with: insertedString)
@@ -536,12 +567,24 @@ public class PorticoTextLayoutEngine {
 		// Inline notation (§7a): a just-typed `》` closing `…《reading》` converts to a ruby group —
 		// as a SEPARATE undo step (see applyInlineRubyConversion), so undo returns to the literal
 		// characters first. Guarded internally to only fire when a run actually closes.
-		applyInlineRubyConversion()
+		// Gated OFF by default since 0.6.0 (owner ruling): Aozora import happens at explicit
+		// boundaries (paste, `parse(aozora:)`), not during default typing.
+		if importsAozoraRubyWhileTyping { applyInlineRubyConversion() }
 	}
 
+	/// Opt-in live Aozora conversion while typing: a just-typed `》` closing `[｜]base《reading》`
+	/// converts to a ruby group (own undo step — always escapable). Default `false` (0.6.0 owner
+	/// ruling): the owned notation is `PorticoNotation`; Aozora is a one-way import that fires at
+	/// explicit boundaries (paste, `parse(aozora:)`). Hosts whose only ruby input is inline typing
+	/// (e.g. MangaLoft until it grows a ruby menu) opt in deliberately.
+	/// Known misfire when enabled: `《》` is legitimate punctuation for titles (《吾輩は猫である》),
+	/// so a title typed right after kanji converts to surprise ruby; undo reverses it in one step.
+	public var importsAozoraRubyWhileTyping = false
+
 	// MARK: - Clipboard round-trip (backs macOS copy/cut/paste)
-	// Ruby survives copy/paste by going through Aozora notation: Copy serializes the selection,
-	// Paste parses it back. See Docs/RubyEditing-Design.md §7.2.
+	// Ruby and 縦中横 overrides survive copy/paste through the OWNED notation (PorticoNotation):
+	// Copy serializes the selection, Paste parses it back — identity for Portico-originated
+	// content; external plain text additionally gets the one-way Aozora import.
 
 	/// Set / edit / remove the ruby reading over `range` as **one undo step** (nil, empty, or
 	/// whitespace-only removes it). The base text is unchanged, so the caret/selection are
@@ -569,23 +612,155 @@ public class PorticoTextLayoutEngine {
 		updateLayout()
 	}
 
-	/// The current selection serialized to Aozora notation (ruby preserved), or nil if there is no
-	/// non-empty selection. Plain text serializes to itself (no marks).
-	func serializedSelection() -> String? {
-		guard let sr = selectionRange, sr.length > 0 else { return nil }
-		return PorticoRuby.serialize(attributedString.attributedSubstring(from: sr))
+	/// Apply or clear a 縦中横 override (0.6.0 PR-1). Range surgery (review
+	/// fold): every override span INTERSECTING `range` is cleared first, so a
+	/// partial overlap replaces the intersection cleanly (ruby's surgery
+	/// template); then `kind` (if non-nil) applies over the whole range as
+	/// ONE identity-boxed span. No-op calls (clearing where nothing exists)
+	/// push no undo step. Precedence with ruby is handled at DERIVATION
+	/// (ruby wins); nesting is not expressible in serialization.
+	public func setTateChuYoko(_ kind: PorticoTateChuYoko.Override.Kind?, for range: NSRange) {
+		guard range.length > 0, range.location >= 0,
+		      NSMaxRange(range) <= attributedString.length else { return }
+		let mutableString = NSMutableAttributedString(attributedString: attributedString)
+		var touched = false
+		mutableString.enumerateAttribute(
+			PorticoTateChuYoko.overrideKey,
+			in: NSRange(location: 0, length: mutableString.length)
+		) { value, spanRange, _ in
+			guard value != nil, NSIntersectionRange(spanRange, range).length > 0 else { return }
+			mutableString.removeAttribute(PorticoTateChuYoko.overrideKey, range: spanRange)
+			touched = true
+		}
+		if let kind {
+			mutableString.addAttribute(
+				PorticoTateChuYoko.overrideKey,
+				value: PorticoTateChuYoko.Override(kind),
+				range: range)
+			touched = true
+		}
+		guard touched else { return }
+		beginUndoStep()
+		attributedString = mutableString
+		textDidChange?(attributedString)
+		updateLayout()
 	}
 
-	/// Parse Aozora notation and insert it at the current target range (replacing any selection),
-	/// giving the pasted text the insertion context's base attributes (font/colour) while keeping
-	/// its parsed ruby annotations. Plain pasted text (no `《》`) inserts as plain text.
-	func insertNotation(_ notation: String) {
+	/// The state-dependent menu verb for `range`, evaluated AT MENU-OPEN TIME
+	/// (0.6.0 PR-3): `.release` ("縦中横を解除") when the whole range already
+	/// renders inside 縦中横 cells; `.apply` ("縦中横") otherwise — a MIXED
+	/// selection resolves APPLY-WINS (design OQ-A, the bold-editor convention).
+	public enum TateChuYokoToggle { case apply, release }
+	public func tateChuYokoToggle(for range: NSRange) -> TateChuYokoToggle {
+		guard range.length > 0, NSMaxRange(range) <= attributedString.length else { return .apply }
+		var covered = 0
+		for group in PorticoTateChuYoko.effectiveGroups(in: attributedString) {
+			covered += NSIntersectionRange(group, range).length
+		}
+		return covered == range.length ? .release : .apply
+	}
+
+	/// Perform the toggle `tateChuYokoToggle(for:)` names. Apply normalizes the
+	/// whole selection into ONE combine span (surgery clears any suppress —
+	/// "縦中横 on a suppressed range removes the suppress", never a
+	/// suppress-still-wins surprise). Release makes the selection stop
+	/// rendering 縦中横: explicit overrides intersecting it are cleared, and
+	/// automatic groups still intersecting it after that are SUPPRESSED
+	/// (their full atomic ranges) — one undo step either way.
+	///
+	/// SNAP rule (witness fold, V3): apply operates at the same granularity
+	/// the selection HIGHLIGHT communicates — whole cells. A selection edge
+	/// falling inside an effective group highlights the whole cell (the v1
+	/// visual rule), so the range snaps OUTWARD to cover every intersected
+	/// group in full; otherwise a `月1` grabber stop that *paints* as `月10`
+	/// would combine `月1` and orphan the `0` (three per-spec rules composing
+	/// into a WYSIWYG break). The foreclosed sub-cell selection is one the UI
+	/// cannot even display, so no intent is lost.
+	public func performTateChuYokoToggle(for range: NSRange) {
+		guard range.length > 0, NSMaxRange(range) <= attributedString.length else { return }
+		switch tateChuYokoToggle(for: range) {
+		case .apply:
+			var snapped = range
+			for group in PorticoTateChuYoko.effectiveGroups(in: attributedString)
+			where NSIntersectionRange(group, range).length > 0 {
+				snapped = NSUnionRange(snapped, group)
+			}
+			setTateChuYoko(.combine, for: snapped)
+		case .release:
+			releaseTateChuYoko(in: range)
+		}
+	}
+
+	private func releaseTateChuYoko(in range: NSRange) {
+		let mutableString = NSMutableAttributedString(attributedString: attributedString)
+		var touched = false
+		mutableString.enumerateAttribute(
+			PorticoTateChuYoko.overrideKey,
+			in: NSRange(location: 0, length: mutableString.length)
+		) { value, spanRange, _ in
+			guard value != nil, NSIntersectionRange(spanRange, range).length > 0 else { return }
+			mutableString.removeAttribute(PorticoTateChuYoko.overrideKey, range: spanRange)
+			touched = true
+		}
+		// What still renders 縦中横 here is automatic — suppress it. (A cleared
+		// 3+-length combine has no auto group underneath, so clearing sufficed.)
+		for group in PorticoTateChuYoko.effectiveGroups(in: mutableString)
+		where NSIntersectionRange(group, range).length > 0 {
+			mutableString.addAttribute(
+				PorticoTateChuYoko.overrideKey,
+				value: PorticoTateChuYoko.Override(.suppress),
+				range: group)
+			touched = true
+		}
+		guard touched else { return }
+		beginUndoStep()
+		attributedString = mutableString
+		textDidChange?(attributedString)
+		updateLayout()
+	}
+
+	/// The 縦中横 override covering `index`, if any — the menu-title seam
+	/// (state-dependent toggle) and tests read this.
+	public func tateChuYokoOverride(at index: Int) -> PorticoTateChuYoko.Override.Kind? {
+		guard index >= 0, index < attributedString.length else { return nil }
+		let value = attributedString.attribute(
+			PorticoTateChuYoko.overrideKey, at: index, effectiveRange: nil)
+		return (value as? PorticoTateChuYoko.Override)?.kind
+	}
+
+	/// The current selection serialized to the OWNED notation (`PorticoNotation` — ruby and
+	/// 縦中横 overrides preserved), or nil if there is no non-empty selection. Plain text
+	/// serializes to itself (no marks). Switched from the Aozora path in 0.6.0 PR-3: parse
+	/// mints a fresh identity box per tcy command, so copy/paste-adjacent yields DISTINCT
+	/// cells by construction (the review's paste-coalescing hazard).
+	func serializedSelection() -> String? {
+		guard let sr = selectionRange, sr.length > 0 else { return nil }
+		return PorticoNotation.serialize(attributedString.attributedSubstring(from: sr))
+	}
+
+	/// Parse notation and insert it at the current target range (replacing any selection),
+	/// giving the pasted text the insertion context's base attributes (font/colour) while
+	/// keeping its parsed annotations. Two layers, both one-way into the model:
+	/// 1. the OWNED grammar (`[[ruby:…]]`/`[[tcy:…]]` — internal copy/paste round-trip);
+	/// 2. with `importingAozora`, an Aozora pass over the remaining PLAIN segments
+	///    (`漢字《かんじ》` pasted from an external manuscript) — the paste boundary is an
+	///    explicit import boundary (owner ruling 2026-07-04), unlike default typing.
+	/// The view layer passes `importingAozora: false` for Portico-originated pasteboard
+	/// content (release-review blocker: internal copy/paste must be IDENTITY — literal
+	/// `《》` a user typed must not turn into ruby on the way back in); the Aozora pass runs
+	/// only for external plain text.
+	func insertNotation(_ notation: String, importingAozora: Bool = true) {
 		beginUndoStep() // paste is one discrete undo step
 		let pasteTarget = markedRange ?? selectionRange ?? NSRange(location: cursorIndex, length: 0)
 		var contextAttrs = inheritedAttributes(at: pasteTarget, in: attributedString)
 		contextAttrs.removeValue(forKey: NSAttributedString.Key(kCTUnderlineStyleAttributeName as String))
 		contextAttrs.removeValue(forKey: PorticoRuby.rubyKey)
-		insertAttributedText(PorticoRuby.parse(notation, attributes: contextAttrs))
+		// Pasted notation carries its own annotations; never inherit an override from the context.
+		contextAttrs.removeValue(forKey: PorticoTateChuYoko.overrideKey)
+		let parsed = NSMutableAttributedString(
+			attributedString: PorticoNotation.parse(notation, attributes: contextAttrs))
+		if importingAozora { PorticoRuby.importAozora(in: parsed) }
+		insertAttributedText(parsed)
 	}
 
 	/// Replace the current target range (marked ▸ selection ▸ caret) with `attributed`, preserving
@@ -609,6 +784,11 @@ public class PorticoTextLayoutEngine {
 	/// (§7a) as its **own** undo step — the typing run is closed first, so undo #1 reverts the
 	/// conversion to the literal `《》` characters and undo #2 reverts the typing (design §4).
 	/// No-op when nothing closes a run.
+	///
+	/// Aozora posture (0.6.0 review): this live conversion is a deliberate ONE-WAY IMPORT at
+	/// typing time — the same quarantine class as `PorticoNotation.parse(aozora:)`. Nothing ever
+	/// serializes back to `《》`; the clean-break claim is about representation, not input
+	/// convenience. Undo #1 restores the literal characters, so the conversion is always escapable.
 	///
 	/// Note: on the converting keystroke, `textDidChange` fires **twice** — once for the literal
 	/// notation (from `insertText`) and once for the converted group (here). Both are synchronous
@@ -679,16 +859,26 @@ public class PorticoTextLayoutEngine {
 	public func stringIndex(for point: CGPoint) -> Int {
 		guard let hit = lineHit(for: point) else { return 0 }
 		let index = CTLineGetStringIndexForPosition(hit.line, hit.relativePoint)
-		// 縦中横 interior-tap rule (slice-4 P5 pin, DELIBERATE — not fallout):
-		// a tap resolving strictly INSIDE a group snaps to the nearer
-		// boundary by cell half — the pair edits as two characters, but a
-		// caret placed between them by a tap reads as a mis-tap, not intent.
-		// (Arrow keys remain index-based and can still park mid-group.)
+		// 縦中横 interior-tap rule (0.6.0 REV 2 — supersedes the v1 cell-half
+		// snap): a tap inside a group's cell resolves via the MINI-LINE's own
+		// gap geometry — the glyphs run horizontally inside the cell, so the
+		// tap's X picks the nearest glyph gap (including interior gaps, which
+		// 3+-length combines need reachable). Real-editor behavior: a center
+		// tap on "12" parks between the digits.
 		for group in currentTateChuYokoGroups() {
 			guard index > group.location, index < group.location + group.length,
 			      let cell = tateChuYokoCell(for: group) else { continue }
-			// Vertical: leading half = the UPPER half of the cell.
-			return point.y >= cell.midY ? group.location : group.location + group.length
+			let baseAttributes = attributedString.attributes(at: group.location, effectiveRange: nil)
+			let mini = PorticoTateChuYoko.miniLine(
+				groupText: (attributedString.string as NSString).substring(with: group),
+				baseAttributes: baseAttributes,
+				cellCross: cell.width,
+				stroke: nil)
+			let drawX = cell.midX - mini.width / 2
+			let local = CTLineGetStringIndexForPosition(
+				mini.line, CGPoint(x: point.x - drawX, y: 0))
+			guard local != kCFNotFound else { return group.location }
+			return group.location + max(0, min(local, group.length))
 		}
 		return index
 	}
@@ -1209,7 +1399,7 @@ public class PorticoTextLayoutEngine {
 			mutableString.addAttribute(.verticalGlyphForm, value: true, range: fullRange)
 			// 縦中横 (slice 4): reserve one column cell per auto-detected group
 			// — on the LAYOUT COPY only (the backing store never carries the
-			// delegate/marker; typing inheritance and Aozora serialization
+			// delegate/marker; typing inheritance and notation serialization
 			// stay clean by construction).
 			PorticoTateChuYoko.applyReservations(to: mutableString)
 		}
@@ -1561,9 +1751,7 @@ public class PorticoTextLayoutEngine {
 	/// pure derivation the reservation uses; shared by draw + inkBounds.
 	private func currentTateChuYokoGroups() -> [NSRange] {
 		guard orientation == .vertical else { return [] }
-		return PorticoTateChuYoko.groups(
-			in: attributedString.string,
-			excluding: PorticoTateChuYoko.genuineRubyRanges(in: attributedString))
+		return PorticoTateChuYoko.effectiveGroups(in: attributedString)
 	}
 
 	/// The 縦中横 cell in engine (bottom-left) coordinates, derived WITHIN
