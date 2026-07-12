@@ -955,9 +955,14 @@ public class PorticoTextLayoutEngine {
 	}
 	
 	public func caretRect(for index: Int) -> CGRect {
-		guard let textFrame = textFrame else { return .zero }
+		guard let textFrame = textFrame else {
+			// Laid-out-empty documents still need a caret (host chrome can
+			// be fully hidden in the empty state — the caret is then the
+			// editor's ONLY visible artifact).
+			return attributedString.length == 0 ? emptyDocumentCaretRect() : .zero
+		}
 		let lines = CTFrameGetLines(textFrame) as! [CTLine]
-		guard !lines.isEmpty else { return .zero }
+		guard !lines.isEmpty else { return emptyDocumentCaretRect() }
 		
 		var origins = [CGPoint](repeating: .zero, count: lines.count)
 		CTFrameGetLineOrigins(textFrame, CFRangeMake(0, 0), &origins)
@@ -1058,6 +1063,56 @@ public class PorticoTextLayoutEngine {
 			}
 		}
 		return .zero
+	}
+
+	/// The empty document's caret — synthesized via a one-glyph PROBE
+	/// layout: an ideographic space carrying `typingAttributes` (what the
+	/// first typed character will inherit) laid out in the SAME frame with
+	/// the SAME pipeline attributes, whose index-0 caret is taken exactly
+	/// as the main formula would. Bit-parity with where the first real
+	/// glyph's caret lands, for both orientations, without duplicating
+	/// CT's line-placement conventions in arithmetic.
+	private func emptyDocumentCaretRect() -> CGRect {
+		guard bounds.width > 0, bounds.height > 0 else { return .zero }
+		let probe = NSMutableAttributedString(string: "\u{3000}", attributes: typingAttributes)
+		let fullRange = NSRange(location: 0, length: probe.length)
+		// MERGE the pitch into any paragraph style the typing attributes
+		// carry — same treatment as `layoutReadyString` — so alignment /
+		// indents survive and the empty caret sits exactly where the first
+		// typed character's caret will (review F3: a fresh style here made
+		// a center-aligned empty editor's caret jump on the first key).
+		let pitch = effectiveLinePitch
+		let paragraph =
+			(typingAttributes[.paragraphStyle] as? NSParagraphStyle)?
+			.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
+		paragraph.minimumLineHeight = pitch
+		paragraph.maximumLineHeight = pitch
+		probe.addAttribute(.paragraphStyle, value: paragraph, range: fullRange)
+		if orientation == .vertical {
+			probe.addAttribute(.verticalGlyphForm, value: true, range: fullRange)
+		}
+		let setter = CTFramesetterCreateWithAttributedString(probe as CFAttributedString)
+		let path = CGMutablePath()
+		path.addRect(CGRect(origin: .zero, size: bounds))
+		let frame = CTFramesetterCreateFrame(
+			setter, CFRangeMake(0, 0), path, layoutFrameAttributes as CFDictionary)
+		let lines = CTFrameGetLines(frame) as! [CTLine]
+		guard let line = lines.first else { return .zero }
+		var origins = [CGPoint](repeating: .zero, count: 1)
+		CTFrameGetLineOrigins(frame, CFRangeMake(0, 1), &origins)
+		let origin = origins[0]
+		var ascent: CGFloat = 0
+		var descent: CGFloat = 0
+		var leading: CGFloat = 0
+		CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
+		if orientation == .vertical {
+			let caretThickness: CGFloat = 2
+			return CGRect(
+				x: origin.x - descent, y: origin.y - caretThickness,
+				width: ascent + descent, height: caretThickness)
+		} else {
+			return CGRect(x: origin.x, y: origin.y - descent, width: 2, height: ascent + descent)
+		}
 	}
 
 	/// Fill rects for `range` in layout (Core Text, bottom-left origin)

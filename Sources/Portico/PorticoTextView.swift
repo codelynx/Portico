@@ -332,6 +332,41 @@ public class PorticoTextView: UIView, UITextInput {
 	/// already calls — so it augments the existing menu rather than installing a rival interaction.
 	public var selectionMenuProvider: PorticoSelectionMenuProvider?
 
+	/// Host-settable input accessory (e.g. a commit bar docked above the
+	/// software keyboard). `UIView`'s `inputAccessoryView` is get-only; this
+	/// stored override lets hosts assign one. Reassigning while focused
+	/// reloads the input views so the change is immediate. Portico stays
+	/// agnostic about the bar's contents — input CHROME is host vocabulary,
+	/// layout/editing stays engine vocabulary.
+	public var hostInputAccessoryView: UIView? {
+		didSet { if isFirstResponder { reloadInputViews() } }
+	}
+
+	override public var inputAccessoryView: UIView? { hostInputAccessoryView }
+
+	/// Host hook for a CLEAN-STATE hardware-keyboard Escape — the iPad
+	/// analogue of macOS `onExitCommand`. The key command deliberately
+	/// keeps `wantsPriorityOverSystemBehavior == false` (text input / IME
+	/// first: a composing typist's Esc dismisses candidates, never reaches
+	/// this), and the handler additionally guards on no marked text, so
+	/// only a composition-free Esc escapes to the host.
+	public var hostEscapeHandler: (() -> Void)?
+
+	override public var keyCommands: [UIKeyCommand]? {
+		var commands = super.keyCommands ?? []
+		if hostEscapeHandler != nil {
+			commands.append(UIKeyCommand(
+				input: UIKeyCommand.inputEscape, modifierFlags: [],
+				action: #selector(porticoHandleHostEscape)))
+		}
+		return commands
+	}
+
+	@objc private func porticoHandleHostEscape() {
+		guard layoutEngine.markedRange == nil else { return }
+		hostEscapeHandler?()
+	}
+
 	public init(frame: CGRect, layoutEngine: PorticoTextLayoutEngine) {
 		self.layoutEngine = layoutEngine
 		super.init(frame: frame)
