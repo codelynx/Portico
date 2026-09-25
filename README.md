@@ -270,6 +270,45 @@ let anchor = engine.anchorRectForSelection()         // first-segment popover an
 
 Observe changes with `engine.textDidChange` / `engine.selectionDidChange`.
 
+### 7. Transformed hosts (rotate / scale)
+
+A drawing app can pose a text box by rotating and scaling the view from outside — Portico keeps
+laying out at the authored font size in its own coordinates, and needs no transform of its own:
+
+```swift
+PorticoView(engine: engine, orientation: .vertical)
+    .frame(width: 240, height: 320)
+    .scaleEffect(zoom)
+    .rotationEffect(.degrees(angle))
+```
+
+Drawing, caret, click/tap-to-caret, drag-select, the context/edit menu and the input-method
+candidate anchor all follow the host transform on both platforms (tested at arbitrary angles and
+scales). Two things are the host's to handle:
+
+- **Anchor rects are in the text view's own coordinates** — the rect a
+  `PorticoSelectionMenuAction` receives, and `anchorRectForSelection()`. Place a popover INSIDE
+  the transformed subtree so the rect lines up, then undo the transform on the popover itself so
+  the field stays upright and screen-sized (the Example app's Rotate/Scale/Box controls show it):
+
+  ```swift
+  PorticoView(engine: engine, selectionMenuActions: menu)
+      .overlay(alignment: .topLeading) {
+          if let edit { rubyField
+              .scaleEffect(1 / zoom, anchor: .topLeading)
+              .rotationEffect(.degrees(-angle), anchor: .topLeading)
+              .offset(x: edit.anchor.minX, y: edit.anchor.maxY + 4) }
+      }
+      .scaleEffect(zoom)
+      .rotationEffect(.degrees(angle))
+  ```
+
+- ⚠️ **macOS: avoid exact odd multiples of 45° with a non-unit scale.** SwiftUI's rotation plus a
+  scale ≠ 1 on *any* hosted `NSView` trips an AppKit layout assertion (`!isnan(minX)` in
+  `NSView_Layout.m`) at exactly ±45° / ±135° for some scales — reproduced with a plain `NSView`,
+  so it is a platform defect, not Portico's. Nudging the angle by a hair (0.001° is invisible)
+  avoids it; a host that snaps rotation to 45° steps must apply the nudge. iOS is unaffected.
+
 ## Undo & redo — integration tips
 
 Undo is the part most likely to surprise you when embedding a custom text engine, so these are the
