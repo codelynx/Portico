@@ -2,6 +2,17 @@
 
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
+## [Unreleased]
+### Added — transformed hosts
+- **Rotated / scaled hosts are supported and tested** on macOS and iOS: a host may pose the view
+  with `rotationEffect` / `scaleEffect`; hit-testing, selection, menus and the input-method
+  candidate anchor follow it (`PorticoHostTransformTests`). README §7 documents the two host
+  duties: anchor rects are view-local, and the macOS ±45°/±135° AppKit assertion.
+- **Example:** Rotate / Scale / Box controls; the ruby popover rides inside the transform.
+
+### Fixed
+- The test target now compiles for iOS (`import CoreText`).
+
 ## [0.6.0] - 2026-07-04
 ### Added — 縦中横 overrides + the OWNED notation
 The artist-intent layer over 0.5.0's automatic rule, and the release where the

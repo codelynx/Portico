@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import CoreGraphics
+import CoreText
 #if canImport(AppKit)
 import AppKit
 #endif
