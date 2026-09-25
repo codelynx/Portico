@@ -125,3 +125,26 @@ func defaultPitchIsOneAndAHalfEm(vertical: Bool) {
 	let e = hiraginoEngine("あああ\nいいい\nううう", vertical ? .vertical : .horizontal)
 	#expect(abs(lineAdvance(e) - 21) < 0.5, "got \(lineAdvance(e))")
 }
+
+/// ⚠️ KNOWN ISSUE (found in self-review, 2026-09-25; PRE-EXISTING): a line that carries ruby is
+/// shifted inside the fixed-height line box, so columns with and without ruby are NOT evenly
+/// spaced — at 28 pt the gaps are 35 / 49 / 35 around the 42 pt pitch (and were 63 / 77 / 63
+/// around 70 before the pitch fix). Core Text positions each line by its own ascent, and ruby
+/// raises it. Sizing the box to a ruby line did not help. Recorded as a known issue: the day it
+/// is fixed, this test fails with "known issue was not recorded" — then remove the wrapper.
+@Test(arguments: [true, false])
+func rubyAndPlainLinesAreEvenlySpaced(vertical: Bool) {
+	let font = CTFontCreateWithName("HiraMinProN-W3" as CFString, 28, nil)
+	let m = NSMutableAttributedString(attributedString:
+		PorticoRuby.parse("漢字《かんじ》の読《よ》み\nあいうえおか\n東京《とうきょう》タワー\nさしすせそ"))
+	m.addAttribute(NSAttributedString.Key(kCTFontAttributeName as String), value: font,
+	               range: NSRange(location: 0, length: m.length))
+	let e = PorticoTextLayoutEngine(attributedString: m, orientation: vertical ? .vertical : .horizontal, bounds: .zero)
+	e.update(bounds: e.measuredSize())
+	let o = e.lineOrigins()
+	#expect(o.count == 4)
+	let gaps = zip(o, o.dropFirst()).map { vertical ? abs($0.x - $1.x) : abs($0.y - $1.y) }
+	withKnownIssue("ruby lines shift inside the fixed line box (pre-existing デコボコ)") {
+		for gap in gaps { #expect(abs(gap - 42) < 0.5, "gaps \(gaps)") }
+	}
+}
