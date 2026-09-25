@@ -13,6 +13,13 @@ Notable changes to Portico. Pre-1.0, minor versions may include breaking changes
 - **Example:** Rotate / Scale / Box controls; the ruby popover rides inside the transform.
 
 ### Fixed
+- **Line pitch is the real column advance, 1.5 em by default.** The pitch was measured from a
+  line carrying ruby (2.0 em), and Core Text then added the font's leading again between the
+  fixed-height lines, so 14 pt Hiragino columns sat 2.5 em apart — gaps wider than the letters.
+  The pitch is now the font's natural line (glyph box + its own leading: 1.5 em for Hiragino,
+  with half-size ruby fitting in the half-em gap), and the layout copy carries a Core Text
+  paragraph style that pins line spacing, so `linePitchMultiplier` scales the real advance
+  exactly in both orientations. ⚠️ **Visible change:** existing text lays out tighter.
 - The test target now compiles for iOS (`import CoreText`).
 - **The empty-document caret vanished in a box smaller than one line.** The probe that places it
   was laid out in the box itself; when the ruby-aware line pitch did not fit (a host sizing its
