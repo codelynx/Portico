@@ -1092,15 +1092,32 @@ public class PorticoTextLayoutEngine {
 			probe.addAttribute(.verticalGlyphForm, value: true, range: fullRange)
 		}
 		let setter = CTFramesetterCreateWithAttributedString(probe as CFAttributedString)
+		// ⛔ The probe must FIT, or Core Text lays out no line and the caret vanishes. An empty
+		// document measures as zero, so a host sizing its editor to the measurement gets a box
+		// smaller than one line pitch (MangaLoft: a 14 pt vertical editor at its 24 pt minimum,
+		// pitch ≈ 25+ with the ruby allowance) — the empty caret was silently zero there. Lay the
+		// probe out in a box at least one cell big, then pin that box to the real one at the
+		// WRITING-START edges (top + right for vertical, top + left for horizontal): exactly where
+		// the first typed character will appear.
+		let unbounded: CGFloat = 1_000_000
+		let cell = CTFramesetterSuggestFrameSizeWithConstraints(
+			setter, CFRangeMake(0, 0), layoutFrameAttributes as CFDictionary,
+			CGSize(width: unbounded, height: unbounded), nil)
+		let layoutSize = CGSize(
+			width: max(bounds.width, ceil(cell.width)), height: max(bounds.height, ceil(cell.height)))
 		let path = CGMutablePath()
-		path.addRect(CGRect(origin: .zero, size: bounds))
+		path.addRect(CGRect(origin: .zero, size: layoutSize))
 		let frame = CTFramesetterCreateFrame(
 			setter, CFRangeMake(0, 0), path, layoutFrameAttributes as CFDictionary)
 		let lines = CTFrameGetLines(frame) as! [CTLine]
 		guard let line = lines.first else { return .zero }
 		var origins = [CGPoint](repeating: .zero, count: 1)
 		CTFrameGetLineOrigins(frame, CFRangeMake(0, 1), &origins)
-		let origin = origins[0]
+		// Core Text is y-up: keeping the TOP aligned shifts y by the height difference; vertical
+		// text grows leftward from the right edge, so keeping the RIGHT aligned shifts x too.
+		let shiftX = orientation == .vertical ? bounds.width - layoutSize.width : 0
+		let shiftY = bounds.height - layoutSize.height
+		let origin = CGPoint(x: origins[0].x + shiftX, y: origins[0].y + shiftY)
 		var ascent: CGFloat = 0
 		var descent: CGFloat = 0
 		var leading: CGFloat = 0

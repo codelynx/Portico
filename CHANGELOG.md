@@ -14,6 +14,11 @@ Notable changes to Portico. Pre-1.0, minor versions may include breaking changes
 
 ### Fixed
 - The test target now compiles for iOS (`import CoreText`).
+- **The empty-document caret vanished in a box smaller than one line.** The probe that places it
+  was laid out in the box itself; when the ruby-aware line pitch did not fit (a host sizing its
+  empty editor to the zero measurement plus a small minimum), Core Text laid out no line and the
+  caret was a zero rect until the first keystroke. It now lays out in a box at least one cell big,
+  pinned at the writing-start edges.
 
 ## [0.6.0] - 2026-07-04
 ### Added — 縦中横 overrides + the OWNED notation
