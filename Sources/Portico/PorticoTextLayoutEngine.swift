@@ -1081,12 +1081,8 @@ public class PorticoTextLayoutEngine {
 		// indents survive and the empty caret sits exactly where the first
 		// typed character's caret will (review F3: a fresh style here made
 		// a center-aligned empty editor's caret jump on the first key).
-		let pitch = effectiveLinePitch
-		let paragraph =
-			(typingAttributes[.paragraphStyle] as? NSParagraphStyle)?
-			.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
-		paragraph.minimumLineHeight = pitch
-		paragraph.maximumLineHeight = pitch
+		let paragraph = layoutParagraphStyle(
+			from: typingAttributes[.paragraphStyle] as? NSParagraphStyle, lineHeight: layoutLineHeight)
 		probe.addAttribute(.paragraphStyle, value: paragraph, range: fullRange)
 		if orientation == .vertical {
 			probe.addAttribute(.verticalGlyphForm, value: true, range: fullRange)
@@ -1306,26 +1302,25 @@ public class PorticoTextLayoutEngine {
 		PorticoRuby.rubyGroup(at: glyphIndex(for: point), in: attributedString)
 	}
 
-	/// Natural height of a line that carries one row of ruby, measured from a real
-	/// CTLine using the string's own base attributes. Self-calibrating: it reflects
-	/// the font Core Text actually uses (including CJK fallbacks) and the real ruby
-	/// ascent, so no hand-tuned reserve ratio is needed.
-	private func rubyLinePitch() -> CGFloat {
+	/// Metrics of a representative CJK line in the string's own base attributes (the font Core
+	/// Text actually uses, including CJK fallbacks): its natural typographic height — ascent +
+	/// descent + the font's leading — and that leading on its own.
+	///
+	/// ⭐ The natural height IS the default pitch: glyph box plus the font's own gap (1.5 em for
+	/// Hiragino — a half-em gap between columns, exactly the room half-size ruby needs, so ruby
+	/// fits without a reserve). ⛔ Until 2026-09-25 the pitch was measured from a line CARRYING
+	/// ruby (2.0 em) and Core Text then added the leading AGAIN (see `layoutLineHeight`), so 14 pt
+	/// vertical text laid out 2.5 em apart — gaps wider than the letters (artist report).
+	private func baseLineMetrics() -> (pitch: CGFloat, leading: CGFloat) {
 		var attrs = attributedString.length > 0
 			? attributedString.attributes(at: 0, effectiveRange: nil)
 			: typingAttributes
 		attrs.removeValue(forKey: NSAttributedString.Key(kCTRubyAnnotationAttributeName as String))
-		let sample = NSMutableAttributedString(string: "永", attributes: attrs) // representative CJK glyph
-		let annotation = CTRubyAnnotationCreateWithAttributes(.center, .auto, .before, "ル" as CFString, [:] as CFDictionary)
-		sample.addAttribute(
-			NSAttributedString.Key(kCTRubyAnnotationAttributeName as String),
-			value: annotation,
-			range: NSRange(location: 0, length: 1)
-		)
+		let sample = NSAttributedString(string: "永", attributes: attrs) // representative CJK glyph
 		let line = CTLineCreateWithAttributedString(sample as CFAttributedString)
 		var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
 		CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
-		return ascent + descent + leading
+		return (ascent + descent + leading, leading)
 	}
 
 	/// Line origins of the current frame, in layout coordinates. Exposed for tests
@@ -1339,14 +1334,13 @@ public class PorticoTextLayoutEngine {
 		return origins
 	}
 
-	/// Scales the uniform ruby-reserving line pitch. 1.0 (default) = the standard
-	/// ruby-sized pitch; < 1 tightens (ruby may overlap the previous line — the
-	/// client's judgment); > 1 loosens. Clamped to [0.5, 3]; non-finite values are
-	/// ignored. Setting a different value relayouts (and repaints a live view).
-	/// Affects layout, `measuredSize`, and rendering identically — it feeds the one
-	/// shared pitch. Note: in vertical orientation Core Text adds a small constant
-	/// per-column leading on top of the pitch, so the multiplier scales the pitch
-	/// term, not the absolute column advance.
+	/// Scales the uniform line pitch — the distance between successive line / column origins.
+	/// 1.0 (default) = the font's natural pitch (glyph box + its own leading; 1.5 em for
+	/// Hiragino, which holds half-size ruby in the gap); < 1 tightens (ruby may touch the next
+	/// line — the client's judgment); > 1 loosens. Clamped to [0.5, 3]; non-finite values are
+	/// ignored. Setting a different value relayouts (and repaints a live view). Affects layout,
+	/// `measuredSize`, and rendering identically — it feeds the one shared pitch, which is now
+	/// the REAL column advance (the leading Core Text inserts is subtracted before layout).
 	public var linePitchMultiplier: CGFloat {
 		get { _linePitchMultiplier }
 		set {
@@ -1359,10 +1353,77 @@ public class PorticoTextLayoutEngine {
 	}
 	private var _linePitchMultiplier: CGFloat = 1.0
 
-	/// The pitch actually applied everywhere pitch matters (layout-string prep and
-	/// the `measuredSize` block-extent floor) — the single source keeping the two
-	/// consumption sites coherent.
-	private var effectiveLinePitch: CGFloat { rubyLinePitch() * _linePitchMultiplier }
+	/// The distance between successive line / column origins — what every consumer means by
+	/// "pitch" (cursor moves between columns, the next-line caret, the `measuredSize` floor).
+	private var effectiveLinePitch: CGFloat { baseLineMetrics().pitch * _linePitchMultiplier }
+
+	/// The FIXED line height handed to Core Text — equal to the pitch, because
+	/// `layoutParagraphStyle` also pins Core Text's line SPACING. Unpinned, Core Text inserts a
+	/// font leading between fixed-height lines (measured: min = max = 28 → origins 35 apart at
+	/// 14 pt Hiragino). ⚠️ Subtracting the sample glyph's leading instead is wrong: the leading
+	/// Core Text adds is not necessarily the sample's (Latin-only text in a zero-leading font got
+	/// none, and `linePitchScalesLineAdvance` failed), so the spacing is pinned instead.
+	private var layoutLineHeight: CGFloat { max(1, effectiveLinePitch) }
+
+	/// The Core Text paragraph style a layout copy carries: the caller's `NSParagraphStyle`
+	/// fields, plus the fixed line height, plus line spacing pinned to the caller's `lineSpacing`
+	/// (default 0). ⭐ The pin is the point: `NSParagraphStyle` cannot say "maximum line spacing",
+	/// and without it Core Text adds each line's font leading on top of the fixed height, so the
+	/// real pitch was the requested one plus half an em for CJK fonts (2026-09-25).
+	private static func ctAlignment(_ alignment: NSTextAlignment) -> CTTextAlignment {
+		switch alignment {
+		case .left: .left
+		case .right: .right
+		case .center: .center
+		case .justified: .justified
+		default: .natural
+		}
+	}
+
+	private func layoutParagraphStyle(from source: NSParagraphStyle?, lineHeight: CGFloat) -> CTParagraphStyle {
+		let style = source ?? NSParagraphStyle.default
+		var alignment = Self.ctAlignment(style.alignment)
+		var lineBreak = CTLineBreakMode(rawValue: UInt8(style.lineBreakMode.rawValue)) ?? .byWordWrapping
+		var direction = CTWritingDirection(rawValue: Int8(style.baseWritingDirection.rawValue)) ?? .natural
+		var firstHead = style.firstLineHeadIndent, head = style.headIndent, tail = style.tailIndent
+		var after = style.paragraphSpacing, before = style.paragraphSpacingBefore
+		var height = lineHeight, spacing = max(0, style.lineSpacing)
+		var tabInterval = style.defaultTabInterval
+		var tabs: CFArray = style.tabStops.map { tab in
+			CTTextTabCreate(Self.ctAlignment(tab.alignment), Double(tab.location), tab.options as CFDictionary)
+		} as CFArray
+		return withUnsafePointer(to: &alignment) { pAlign in
+		withUnsafePointer(to: &lineBreak) { pBreak in
+		withUnsafePointer(to: &direction) { pDir in
+		withUnsafePointer(to: &firstHead) { pFirst in
+		withUnsafePointer(to: &head) { pHead in
+		withUnsafePointer(to: &tail) { pTail in
+		withUnsafePointer(to: &after) { pAfter in
+		withUnsafePointer(to: &before) { pBefore in
+		withUnsafePointer(to: &height) { pHeight in
+		withUnsafePointer(to: &spacing) { pSpacing in
+		withUnsafePointer(to: &tabInterval) { pTabInterval in
+		withUnsafePointer(to: &tabs) { pTabs in
+			let size = MemoryLayout<CGFloat>.size
+			let settings = [
+				CTParagraphStyleSetting(spec: .alignment, valueSize: MemoryLayout<CTTextAlignment>.size, value: pAlign),
+				CTParagraphStyleSetting(spec: .lineBreakMode, valueSize: MemoryLayout<CTLineBreakMode>.size, value: pBreak),
+				CTParagraphStyleSetting(spec: .baseWritingDirection, valueSize: MemoryLayout<CTWritingDirection>.size, value: pDir),
+				CTParagraphStyleSetting(spec: .firstLineHeadIndent, valueSize: size, value: pFirst),
+				CTParagraphStyleSetting(spec: .headIndent, valueSize: size, value: pHead),
+				CTParagraphStyleSetting(spec: .tailIndent, valueSize: size, value: pTail),
+				CTParagraphStyleSetting(spec: .paragraphSpacing, valueSize: size, value: pAfter),
+				CTParagraphStyleSetting(spec: .paragraphSpacingBefore, valueSize: size, value: pBefore),
+				CTParagraphStyleSetting(spec: .minimumLineHeight, valueSize: size, value: pHeight),
+				CTParagraphStyleSetting(spec: .maximumLineHeight, valueSize: size, value: pHeight),
+				CTParagraphStyleSetting(spec: .minimumLineSpacing, valueSize: size, value: pSpacing),
+				CTParagraphStyleSetting(spec: .maximumLineSpacing, valueSize: size, value: pSpacing),
+				CTParagraphStyleSetting(spec: .defaultTabInterval, valueSize: size, value: pTabInterval),
+				CTParagraphStyleSetting(spec: .tabStops, valueSize: MemoryLayout<CFArray>.size, value: pTabs),
+			]
+			return CTParagraphStyleCreate(settings, settings.count)
+		}}}}}}}}}}}}
+	}
 
 	/// A trailing hard line break has NO CTLine of its own (the `\n` belongs
 	/// to the line it terminates), so the "next line" the user just created
@@ -1515,17 +1576,14 @@ public class PorticoTextLayoutEngine {
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
 		let fullRange = NSRange(location: 0, length: mutableString.length)
 
-		// Reserve a uniform line-to-line pitch large enough to hold ruby on every
-		// line, so lines stay evenly spaced whether or not they carry ruby (no
-		// デコボコ). Merge it into any caller-supplied paragraph style rather than
-		// overwriting, so alignment / indents / spacing survive.
-		let pitch = effectiveLinePitch
-		var styleUpdates: [(NSRange, NSParagraphStyle)] = []
+		// A uniform line-to-line pitch, so lines stay evenly spaced whether or not
+		// they carry ruby (no デコボコ): fixed height = pitch, line spacing pinned
+		// (`layoutParagraphStyle`). Built FROM any caller-supplied paragraph style,
+		// so alignment / indents / spacing / tabs survive.
+		let lineHeight = layoutLineHeight
+		var styleUpdates: [(NSRange, CTParagraphStyle)] = []
 		mutableString.enumerateAttribute(.paragraphStyle, in: fullRange) { value, range, _ in
-			let style = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
-			style.minimumLineHeight = pitch
-			style.maximumLineHeight = pitch
-			styleUpdates.append((range, style))
+			styleUpdates.append((range, layoutParagraphStyle(from: value as? NSParagraphStyle, lineHeight: lineHeight)))
 		}
 		for (range, style) in styleUpdates {
 			mutableString.addAttribute(.paragraphStyle, value: style, range: range)

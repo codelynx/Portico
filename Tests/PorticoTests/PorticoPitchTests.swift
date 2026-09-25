@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import CoreGraphics
+import CoreText
 @testable import Portico
 
 // MARK: - Line-pitch tests (PR-3: linePitchMultiplier)
@@ -41,10 +42,10 @@ private func lineAdvance(_ e: PorticoTextLayoutEngine) -> CGFloat {
 }
 
 @Test func linePitchScalesVerticalColumns() {
-	// Vertical column advance = multiplier × pitch + a CONSTANT per-column leading
-	// Core Text adds (~25% of pitch, measured), so neither absolute base×k linearity
-	// nor advance ratios hold there. The DELTA between multipliers cancels the
-	// constant: (a3.0 − a1.5) / (a2.0 − a1.0) == 1.5 exactly.
+	// Vertical column advance = multiplier × pitch, EXACTLY. ⛔ Until 2026-09-25 Core Text added
+	// a constant font leading per column on top, so this test could only check the DELTA
+	// between multipliers; with line spacing pinned (`layoutParagraphStyle`) plain linearity
+	// holds and is asserted directly.
 	let text = "縦書き一\n縦書き二"
 	let a10 = lineAdvance(pitchEngine(text, orientation: .vertical))
 	let a15 = lineAdvance(pitchEngine(text, orientation: .vertical, multiplier: 1.5))
@@ -52,6 +53,8 @@ private func lineAdvance(_ e: PorticoTextLayoutEngine) -> CGFloat {
 	let a30 = lineAdvance(pitchEngine(text, orientation: .vertical, multiplier: 3.0))
 	#expect(a15 > a10) // loosening loosens
 	#expect(abs((a30 - a15) / (a20 - a10) - 1.5) < 0.05)
+	#expect(abs(a20 - a10 * 2) < 0.5, "vertical columns scale linearly: \(a10) → \(a20)")
+	#expect(abs(a30 - a10 * 3) < 0.5)
 }
 
 // MARK: measuredSize tracks the multiplier
@@ -102,4 +105,23 @@ private func lineAdvance(_ e: PorticoTextLayoutEngine) -> CGFloat {
 	e.linePitchMultiplier = .nan
 	// NaN comparisons are false, so min/max clamp NaN to a bound rather than storing it.
 	#expect(e.linePitchMultiplier.isFinite)
+}
+
+// MARK: - The pitch is the REAL column advance (2026-09-25)
+
+private func hiraginoEngine(_ s: String, _ orientation: PorticoLayoutOrientation) -> PorticoTextLayoutEngine {
+	let font = CTFontCreateWithName("HiraMinProN-W3" as CFString, 14, nil)
+	return PorticoTextLayoutEngine(
+		attributedString: NSAttributedString(
+			string: s, attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font]),
+		orientation: orientation, bounds: pitchBounds)
+}
+
+/// 14 pt Hiragino columns sit 1.5 em apart — the font's natural pitch, with half-size ruby
+/// fitting in the half-em gap. ⛔ Negative signature: 35 pt (2.5 em) — the ruby-line pitch
+/// (2.0 em) with Core Text adding the font leading AGAIN on top (artist report, 2026-09-25).
+@Test(arguments: [true, false])
+func defaultPitchIsOneAndAHalfEm(vertical: Bool) {
+	let e = hiraginoEngine("あああ\nいいい\nううう", vertical ? .vertical : .horizontal)
+	#expect(abs(lineAdvance(e) - 21) < 0.5, "got \(lineAdvance(e))")
 }
