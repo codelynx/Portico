@@ -8,6 +8,8 @@ Notable changes to Portico. Pre-1.0, minor versions may include breaking changes
   with `rotationEffect` / `scaleEffect`; hit-testing, selection, menus and the input-method
   candidate anchor follow it (`PorticoHostTransformTests`). README §7 documents the two host
   duties: anchor rects are view-local, and the macOS ±45°/±135° AppKit assertion.
+- **Sheared hosts** (a rotation followed by a non-uniform scale): the input-method anchor and
+  click/tap-to-caret are tested exact on both platforms (`…ShearedHost` tests).
 - **Example:** Rotate / Scale / Box controls; the ruby popover rides inside the transform.
 
 ### Fixed
