@@ -12,6 +12,16 @@ Notable changes to Portico. Pre-1.0, minor versions may include breaking changes
   click/tap-to-caret are tested exact on both platforms (`…ShearedHost` tests).
 - **Example:** Rotate / Scale / Box controls; the ruby popover rides inside the transform.
 
+### Changed — ruby is drawn by Portico
+- **The base text lays out as if the ruby were absent.** Core Text's own ruby moved a word whose
+  reading is longer than it (by half the excess at a line start) and shifted lines carrying ruby,
+  so columns sat unevenly. The layout copy now strips the reading; Portico draws each reading
+  itself, centred on its word (`rubyPlacements`, fill and 縁取り passes), free to overshoot the
+  box and overlap neighbours. `inkBounds` includes the ruby; `measuredSize` does not.
+- **A ruby word never breaks across lines** (unless it is longer than a whole line): the layout
+  copy carries a vestigial ruby (U+200B, size 0.01) on such groups. String indices are unchanged.
+- ⚠️ **Visible change:** existing ruby text re-lays out.
+
 ### Fixed
 - **Line pitch is the real column advance, 1.5 em by default.** The pitch was measured from a
   line carrying ruby (2.0 em), and Core Text then added the font's leading again between the
