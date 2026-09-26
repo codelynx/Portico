@@ -156,19 +156,21 @@ private func whiteAndDarkCounts(_ data: [UInt8]) -> (white: Int, dark: Int) {
 // MARK: R1 gate — ruby readings are outlined too
 
 @Test func rubyIsOutlined() {
-	// Black fill + white outline: the ruby overhang band must contain white rim
-	// pixels. If this fails, Core Text is not propagating stroke attributes to
-	// CTRubyAnnotation glyphs and the stroke pass must rebuild annotations with
-	// stroke attributes (the plan's R1 fallback — shipped).
+	// Black fill + white outline: the ruby band must contain white rim pixels.
+	// Since the ruby-typesetting arc (2026-09-25) Portico DRAWS each reading itself
+	// (`drawRuby`) with stroke attributes in the stroke pass — the R1 annotation
+	// rebuild is retired. ⚠️ The sample starts on the SECOND line: a first-line
+	// reading now overshoots ABOVE the layout box (by design), i.e. outside this
+	// box-sized bitmap.
 	//
 	// Band threshold: the OUTLINED no-ruby baseline's ink top (base rim included) +
 	// slop, so base-glyph rim pixels can't masquerade as ruby rim. 40pt font makes
 	// the ruby band fat enough for the count to have real margin.
 	let outlineSpec = PorticoTextOutline(width: 2, color: white)
-	let baseAttributed = NSAttributedString(string: "世界を見る", attributes: [.font: bigFont])
+	let baseAttributed = NSAttributedString(string: "\n世界を見る", attributes: [.font: bigFont])
 	let outlinedBaseInk = outlineEngine(baseAttributed, outline: outlineSpec).inkBounds()
 
-	let rubyAttributed = NSMutableAttributedString(attributedString: PorticoRuby.parse("世界《せかい》を見る"))
+	let rubyAttributed = NSMutableAttributedString(attributedString: PorticoRuby.parse("\n世界《せかい》を見る"))
 	rubyAttributed.addAttribute(.font, value: bigFont, range: NSRange(location: 0, length: rubyAttributed.length))
 	let e = outlineEngine(rubyAttributed, outline: outlineSpec)
 	let data = render(e)

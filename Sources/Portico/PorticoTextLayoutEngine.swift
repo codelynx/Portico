@@ -1454,6 +1454,41 @@ public class PorticoTextLayoutEngine {
 	/// Cached stroke-pass frame; invalidated by relayout and by `outline` changes.
 	private var strokeTextFrame: CTFrame?
 
+	/// The invisible ruby that keeps a ruby word on one line (see `layoutReadyString`).
+	private static let keepTogetherRuby: CTRubyAnnotation = {
+		let attributes: [CFString: Any] = [kCTRubyAnnotationSizeFactorAttributeName: 0.01 as CFNumber]
+		return CTRubyAnnotationCreateWithAttributes(
+			.center, .auto, .before, "\u{200B}" as CFString, attributes as CFDictionary)
+	}()
+
+	/// The inline limit the current layout breaks at: the box's writing-direction extent.
+	private var boundsInlineLimit: CGFloat? {
+		let extent = orientation == .vertical ? bounds.height : bounds.width
+		return extent > 0 ? extent : nil
+	}
+
+	/// The typographic ascent of a base range laid out on its own (vertical forms in vertical
+	/// text): the distance from the baseline to the glyph box's ruby-side edge.
+	private func baseGlyphAscent(of range: NSRange) -> CGFloat {
+		let base = NSMutableAttributedString(attributedString: attributedString.attributedSubstring(from: range))
+		let full = NSRange(location: 0, length: base.length)
+		base.removeAttribute(PorticoRuby.rubyKey, range: full)
+		base.removeAttribute(.paragraphStyle, range: full)
+		if orientation == .vertical { base.addAttribute(.verticalGlyphForm, value: true, range: full) }
+		var ascent: CGFloat = 0
+		CTLineGetTypographicBounds(CTLineCreateWithAttributedString(base), &ascent, nil, nil)
+		return ascent
+	}
+
+	/// A base range's natural advance along the writing direction (its own attributes).
+	private func baseAdvance(of range: NSRange) -> CGFloat {
+		let base = NSMutableAttributedString(attributedString: attributedString.attributedSubstring(from: range))
+		let full = NSRange(location: 0, length: base.length)
+		base.removeAttribute(PorticoRuby.rubyKey, range: full)
+		if orientation == .vertical { base.addAttribute(.verticalGlyphForm, value: true, range: full) }
+		return CGFloat(CTLineGetTypographicBounds(CTLineCreateWithAttributedString(base), nil, nil, nil))
+	}
+
 	/// The stroke-pass frame: the layout-ready string with CT stroke attributes
 	/// (positive width = stroke-only) framed identically to `textFrame`. Lazily
 	/// built and cached. Point width → percent-of-font-size conversion is per run
@@ -1463,7 +1498,7 @@ public class PorticoTextLayoutEngine {
 		guard let o = activeOutline, textFrame != nil else { return nil }
 		if let cached = strokeTextFrame { return cached }
 
-		let strokeString = NSMutableAttributedString(attributedString: layoutReadyString())
+		let strokeString = NSMutableAttributedString(attributedString: layoutReadyString(inlineLimit: boundsInlineLimit))
 		let fullRange = NSRange(location: 0, length: strokeString.length)
 		let strokeWidthKey = NSAttributedString.Key(kCTStrokeWidthAttributeName as String)
 		let strokeColorKey = NSAttributedString.Key(kCTStrokeColorAttributeName as String)
@@ -1488,41 +1523,9 @@ public class PorticoTextLayoutEngine {
 			}
 		}
 
-		// R1 (verified by the rubyIsOutlined gate): CTRubyAnnotation glyphs do NOT
-		// inherit the base run's stroke attributes — rebuild each annotation in the
-		// stroke pass carrying stroke attributes of its own, sized so the reading
-		// gets the same ABSOLUTE rim (percent is relative to the ruby font size =
-		// size factor × base size). Alignment/overhang are copied from the source
-		// annotation (today always center/auto — the single mint site — but copying
-		// doesn't rot if PorticoRuby ever grows options).
-		strokeString.enumerateAttribute(PorticoRuby.rubyKey, in: fullRange) { value, range, _ in
-			guard let value else { return }
-			// Foreign (non-CTRubyAnnotation) values under the ruby key are treated
-			// as non-ruby everywhere else in Portico — the stroke pass must not trap
-			// on them either.
-			guard CFGetTypeID(value as CFTypeRef) == CTRubyAnnotationGetTypeID() else { return }
-			let annotation = value as! CTRubyAnnotation
-			let reading = CTRubyAnnotationGetTextForPosition(annotation, .before)
-			guard let reading else { return }
-			let baseSize = Self.pointSize(
-				ofFontAttribute: strokeString.attribute(.font, at: range.location, effectiveRange: nil)
-			)
-			let sizeFactor = CTRubyAnnotationGetSizeFactor(annotation)
-			let rubySize = baseSize * (sizeFactor > 0 ? sizeFactor : 0.5)
-			let rubyPercent = (2 * o.width) / rubySize * 100
-			let rubyAttributes: [CFString: Any] = [
-				kCTStrokeWidthAttributeName: rubyPercent as NSNumber,
-				kCTStrokeColorAttributeName: o.color,
-			]
-			let strokeAnnotation = CTRubyAnnotationCreateWithAttributes(
-				CTRubyAnnotationGetAlignment(annotation),
-				CTRubyAnnotationGetOverhang(annotation),
-				.before,
-				reading,
-				rubyAttributes as CFDictionary
-			)
-			strokeString.addAttribute(PorticoRuby.rubyKey, value: strokeAnnotation, range: range)
-		}
+		// Ruby is NOT in the layout copy any more (only the invisible keep-together annotation,
+		// which must stay identical here so the stroke frame lines up with the fill frame);
+		// `drawRuby(in:stroke:)` strokes the readings (ruby-typesetting arc, 2026-09-25).
 
 		let setter = CTFramesetterCreateWithAttributedString(strokeString as CFAttributedString)
 		let path = CGMutablePath()
@@ -1572,9 +1575,22 @@ public class PorticoTextLayoutEngine {
 	/// glyph forms when vertical. Shared by `updateLayout()` and `measuredSize(inlineExtent:)`
 	/// so layout and measurement can never disagree (WYSIWYG parity). Independent of
 	/// `bounds` — valid on an engine that has never laid out.
-	private func layoutReadyString() -> NSAttributedString {
+	private func layoutReadyString(inlineLimit: CGFloat? = nil) -> NSAttributedString {
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
 		let fullRange = NSRange(location: 0, length: mutableString.length)
+
+		// RUBY (ruby-typesetting arc, 2026-09-25): Core Text lays out the BASE text only — the
+		// reading is drawn by Portico (`drawRuby`), centred on its word, so a long reading never
+		// pushes its base and a ruby column never shifts (both came from Core Text's own ruby).
+		// A word that fits the inline limit keeps a VESTIGIAL annotation (zero-width reading,
+		// 1 % size): Core Text then never splits it across lines (S0 probe — its FULL ruby does
+		// not), and it draws nothing and moves no glyph. ⛔ A word LONGER than the limit gets none:
+		// kept whole, Core Text falls back to one character per line for the whole text.
+		mutableString.removeAttribute(PorticoRuby.rubyKey, range: fullRange)
+		for group in PorticoRuby.rubyGroups(in: NSRange(location: 0, length: attributedString.length), of: attributedString) {
+			if let inlineLimit, baseAdvance(of: group.base) > inlineLimit { continue }
+			mutableString.addAttribute(PorticoRuby.rubyKey, value: Self.keepTogetherRuby, range: group.base)
+		}
 
 		// A uniform line-to-line pitch, so lines stay evenly spaced whether or not
 		// they carry ruby (no デコボコ): fixed height = pitch, line spacing pinned
@@ -1620,7 +1636,7 @@ public class PorticoTextLayoutEngine {
 			return
 		}
 
-		let setter = CTFramesetterCreateWithAttributedString(layoutReadyString() as CFAttributedString)
+		let setter = CTFramesetterCreateWithAttributedString(layoutReadyString(inlineLimit: boundsInlineLimit) as CFAttributedString)
 		self.frameSetter = setter
 
 		let path = CGMutablePath()
@@ -1640,12 +1656,12 @@ public class PorticoTextLayoutEngine {
 	/// measured size.
 	public func measuredSize(inlineExtent: CGFloat? = nil) -> CGSize {
 		guard attributedString.length > 0 else { return .zero }
-		let setter = CTFramesetterCreateWithAttributedString(layoutReadyString() as CFAttributedString)
+		// Non-finite or non-positive constraints are treated as unconstrained.
+		let extent: CGFloat? = inlineExtent.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+		let setter = CTFramesetterCreateWithAttributedString(layoutReadyString(inlineLimit: extent) as CFAttributedString)
 		// Generous-but-finite bound for unconstrained axes: CGFloat.greatestFiniteMagnitude
 		// is known to make CTFramesetterSuggestFrameSizeWithConstraints misbehave.
 		let unbounded: CGFloat = 1_000_000
-		// Non-finite or non-positive constraints are treated as unconstrained.
-		let extent: CGFloat? = inlineExtent.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
 		let constraint = orientation == .vertical
 			? CGSize(width: unbounded, height: extent ?? unbounded)
 			: CGSize(width: extent ?? unbounded, height: unbounded)
@@ -1747,40 +1763,6 @@ public class PorticoTextLayoutEngine {
 		return CTFrameGetVisibleStringRange(textFrame).length
 	}
 
-	/// Typographic advance width of a ruby reading at ruby scale (Core Text's
-	/// default 0.5 × the base font size). Used by `inkBounds()` to account for
-	/// reading overhang past a line edge. Falls back to a per-character
-	/// approximation when the base run carries no font (CT default metrics).
-	private static func rubyReadingTypographicWidth(
-		_ reading: String,
-		baseAttributes: [NSAttributedString.Key: Any]
-	) -> CGFloat {
-		// Resolve the base font DEFENSIVELY: a foreign value under `.font`
-		// (Portico tolerates foreign values under its own ruby key; be equally
-		// tolerant here) must degrade to the approximation, never trap.
-		let baseFont: CTFont?
-		if let value = baseAttributes[.font],
-		   CFGetTypeID(value as CFTypeRef) == CTFontGetTypeID() {
-			// Covers CTFont AND platform fonts (NSFont/UIFont are toll-free
-			// bridged, so their CFTypeID IS CTFontGetTypeID()).
-			baseFont = (value as! CTFont)
-		} else {
-			baseFont = nil
-		}
-		let baseSize = baseFont.map(CTFontGetSize) ?? 12
-		let rubySize = baseSize * 0.5
-		guard let baseFont else {
-			// No usable font: kana-monospace approximation.
-			return CGFloat(reading.utf16.count) * rubySize
-		}
-		let rubyFont = CTFontCreateCopyWithAttributes(baseFont, rubySize, nil, nil)
-		let attributed = NSAttributedString(string: reading, attributes: [
-			NSAttributedString.Key(kCTFontAttributeName as String): rubyFont
-		])
-		let line = CTLineCreateWithAttributedString(attributed as CFAttributedString)
-		return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
-	}
-
 	/// Maps a line-local rect (CTLine bounds coordinates: x along the line's advance
 	/// axis from the line origin, y baseline-relative with +y on the ascent side) into
 	/// engine (Core Text bottom-left) space. Orientation-aware: horizontal lines
@@ -1840,43 +1822,21 @@ public class PorticoTextLayoutEngine {
 			// exclusively the mini-line, unioned after this loop.)
 			guard !local.isNull, !local.isEmpty else { continue }
 
-			// LINE-EDGE ruby overhang: glyph-path line bounds include ruby
-			// glyphs, but a reading WIDER than its base overhangs the base's
-			// advance span — and past the line's FIRST/LAST advance that
-			// overhang is painted yet excluded from the line bounds (observed:
-			// line-final long reading in vertical; caught by the MangaLoft
-			// integration containment test). Extend the line-local advance
-			// range by each intersecting group's reading overhang. Extending
-			// mid-line groups too is harmless (their neighbors' ink already
-			// unions wider).
-			let lineRange = CTLineGetStringRange(line)
-			let nsLineRange = NSRange(location: lineRange.location, length: lineRange.length)
-			for group in PorticoRuby.rubyGroups(in: nsLineRange, of: attributedString) {
-				let start = CTLineGetOffsetForStringIndex(line, group.base.location, nil)
-				let end = CTLineGetOffsetForStringIndex(line, group.base.location + group.base.length, nil)
-				let baseSpan = abs(end - start)
-				let readingWidth = Self.rubyReadingTypographicWidth(
-					group.reading,
-					baseAttributes: attributedString.length > group.base.location
-						? attributedString.attributes(at: group.base.location, effectiveRange: nil)
-						: [:]
-				)
-				let overhang = max(0, (readingWidth - baseSpan) / 2)
-				guard overhang > 0 else { continue }
-				local = local.union(CGRect(
-					x: min(start, end) - overhang,
-					y: local.minY,
-					width: baseSpan + overhang * 2,
-					height: local.height
-				))
-			}
-
 			union = union.union(lineLocalToEngineRect(local, lineOrigin: origin))
 		}
 		// The outline's rim extends exactly `width` past the glyph edge (stroke
 		// lineWidth is 2 × width, centered on the path).
 		if !union.isNull, let o = activeOutline {
 			union = union.insetBy(dx: -o.width, dy: -o.width)
+		}
+		// Ruby is drawn by Portico, not Core Text: union each reading's glyph-path ink where it is
+		// drawn — it may overshoot the layout box on any side (the artist's rule), and the
+		// selection box (layout) must not include it while redraw and export (ink) must.
+		let rubyOutset = activeOutline?.width ?? 0
+		for placement in rubyPlacements(stroke: nil) {
+			let path = CTLineGetBoundsWithOptions(placement.line, [.useGlyphPathBounds])
+			guard !path.isNull, !path.isEmpty else { continue }
+			union = union.union(path.applying(placement.transform).insetBy(dx: -rubyOutset, dy: -rubyOutset))
 		}
 		// 縦中横 (slice-4 PR-2): union each group's mini-line ink at its cell —
 		// keyed off the group derivation, NOT line bounds (a group-only column
@@ -1936,10 +1896,98 @@ public class PorticoTextLayoutEngine {
 			// 縦中横 stroke pass rides with the base stroke frame (all strokes
 			// behind all fills — layering parity with the base text).
 			drawTateChuYoko(in: context, stroke: activeOutline)
+			drawRuby(in: context, stroke: activeOutline)
 			context.restoreGState()
 		}
 		CTFrameDraw(textFrame, context)
 		drawTateChuYoko(in: context, stroke: nil)
+		drawRuby(in: context, stroke: nil)
+	}
+
+	// MARK: - Ruby drawn by Portico (ruby-typesetting arc, 2026-09-25)
+
+	/// Where each reading is drawn: a small line CENTRED on its base word along the writing
+	/// direction, sitting just outside the base glyph box on the ruby side (right of a vertical
+	/// column, above a horizontal line). ⭐ The base is laid out as if the ruby were absent, so a
+	/// long reading simply OVERSHOOTS or OVERLAPS its neighbours — the artist's rule; nothing moves.
+	/// A word split across lines (longer than the inline limit) gets its reading over the first part.
+	/// `transform` maps the ruby line's own space into engine (bottom-left) coordinates.
+	func rubyPlacements(stroke: PorticoTextOutline?) -> [(line: CTLine, transform: CGAffineTransform)] {
+		guard let textFrame else { return [] }
+		let lines = CTFrameGetLines(textFrame) as! [CTLine]
+		guard !lines.isEmpty else { return [] }
+		var origins = [CGPoint](repeating: .zero, count: lines.count)
+		CTFrameGetLineOrigins(textFrame, CFRangeMake(0, 0), &origins)
+		var placements: [(line: CTLine, transform: CGAffineTransform)] = []
+		for group in PorticoRuby.rubyGroups(in: NSRange(location: 0, length: attributedString.length), of: attributedString) {
+			guard let index = lines.firstIndex(where: {
+				let r = CTLineGetStringRange($0)
+				return group.base.location >= r.location && group.base.location < r.location + r.length
+			}) else { continue }
+			let line = lines[index], origin = origins[index]
+			let lineRange = CTLineGetStringRange(line)
+			let end = min(group.base.location + group.base.length, lineRange.location + lineRange.length)
+			let start = CTLineGetOffsetForStringIndex(line, group.base.location, nil)
+			let stop = CTLineGetOffsetForStringIndex(line, end, nil)
+			// The base glyph box's ruby-side edge, from the WORD's own glyphs — NOT the laid-out
+			// line, whose typographic ascent the fixed line height inflates (vertical text drew its
+			// ruby about an em too far out). Vertical glyphs are centred on the baseline: ±½ em.
+			let ascent = baseGlyphAscent(of: group.base)
+			guard let ruby = rubyLine(for: group, stroke: stroke) else { continue }
+			var rubyAscent: CGFloat = 0, rubyDescent: CGFloat = 0
+			let rubyWidth = CGFloat(CTLineGetTypographicBounds(ruby, &rubyAscent, &rubyDescent, nil))
+			// Line-local: x along the advance, y across it (ascent side positive).
+			let local = CGAffineTransform(
+				translationX: (start + stop) / 2 - rubyWidth / 2, y: ascent + rubyDescent)
+			let toEngine = orientation == .vertical
+				? CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: origin.x, ty: origin.y)
+				: CGAffineTransform(translationX: origin.x, y: origin.y)
+			placements.append((ruby, local.concatenating(toEngine)))
+		}
+		return placements
+	}
+
+	/// A reading as its own line: the base's attributes at the group, the font scaled by the
+	/// annotation's size factor (half by default), vertical forms in vertical text; `stroke`
+	/// adds the outline so the rim matches the base's ABSOLUTE width.
+	private func rubyLine(for group: (base: NSRange, reading: String), stroke: PorticoTextOutline?) -> CTLine? {
+		guard !group.reading.isEmpty, group.base.location < attributedString.length else { return nil }
+		var attributes = attributedString.attributes(at: group.base.location, effectiveRange: nil)
+		let annotation = attributes[PorticoRuby.rubyKey]
+		for key in [PorticoRuby.rubyKey, .paragraphStyle, PorticoTateChuYoko.groupKey,
+		            NSAttributedString.Key(kCTRunDelegateAttributeName as String)] {
+			attributes.removeValue(forKey: key)
+		}
+		var factor: CGFloat = 0.5
+		if let annotation, CFGetTypeID(annotation as CFTypeRef) == CTRubyAnnotationGetTypeID() {
+			let f = CTRubyAnnotationGetSizeFactor(annotation as! CTRubyAnnotation)
+			if f > 0 { factor = f }
+		}
+		let baseSize = Self.pointSize(ofFontAttribute: attributes[.font])
+		let rubySize = baseSize * factor
+		if let value = attributes[.font], CFGetTypeID(value as CFTypeRef) == CTFontGetTypeID() {
+			attributes[.font] = CTFontCreateCopyWithAttributes(value as! CTFont, rubySize, nil, nil)
+		} else {
+			attributes[.font] = CTFontCreateUIFontForLanguage(.system, rubySize, nil)
+		}
+		if orientation == .vertical { attributes[.verticalGlyphForm] = true }
+		if let stroke {
+			attributes[NSAttributedString.Key(kCTStrokeWidthAttributeName as String)] =
+				((2 * stroke.width) / rubySize * 100) as NSNumber
+			attributes[NSAttributedString.Key(kCTStrokeColorAttributeName as String)] = stroke.color
+		}
+		return CTLineCreateWithAttributedString(NSAttributedString(string: group.reading, attributes: attributes))
+	}
+
+	private func drawRuby(in context: CGContext, stroke: PorticoTextOutline?) {
+		for placement in rubyPlacements(stroke: stroke) {
+			context.saveGState()
+			context.concatenate(placement.transform)
+			context.textMatrix = .identity
+			context.textPosition = .zero
+			CTLineDraw(placement.line, context)
+			context.restoreGState()
+		}
 	}
 
 	/// 縦中横 groups in the CURRENT text (ruby ranges excluded) — the same
