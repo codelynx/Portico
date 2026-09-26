@@ -114,3 +114,24 @@ func bothDrawingPathsPaintTheReading(editorPath: Bool) {
 	}
 	#expect(inked > 20, "reading painted beside its column (\(inked) px)")
 }
+
+/// ⛔ THE CLIFF, at its edge (review 2026-09-25). A ruby word kept whole that does NOT fit makes
+/// Core Text set the WHOLE text one character per line; the guard is `baseAdvance > inlineLimit`.
+/// A word exactly at the limit, and a hair either side of it, must leave the layout sane.
+/// ⛔ Negative signature: about one column per character (~11 here). ⚠️ `｜` makes the WHOLE word the
+/// base — without it `《》` attaches to the preceding kanji run only (タワー would be plain text).
+@Test(arguments: ["東京都庁舎", "東京タワー", "ＡＢ漢字"], [-0.5, -0.01, 0, 0.01, 0.5] as [CGFloat])
+func aRubyWordAtTheLimitNeverCollapsesTheText(word: String, delta: CGFloat) {
+	let base = NSMutableAttributedString(string: word)
+	let all = NSRange(location: 0, length: base.length)
+	base.addAttribute(fontKey, value: font, range: all)
+	base.addAttribute(.verticalGlyphForm, value: true, range: all)
+	let advance = CGFloat(CTLineGetTypographicBounds(CTLineCreateWithAttributedString(base), nil, nil, nil))
+	let e = engine("ああ｜\(word)《よみ》ああああ", bounds: CGSize(width: 1000, height: advance + delta))
+	let columns = Set((0..<e.attributedString.length).map { Int(e.caretRect(for: $0).minX.rounded()) })
+	#expect(columns.count <= 4, "\(columns.count) columns for \(e.attributedString.length) characters")
+	if delta >= 0 {
+		let first = e.caretRect(for: 2).minX, last = e.caretRect(for: 1 + word.count).minX
+		#expect(abs(first - last) < 0.5, "a word that fits stays in one column")
+	}
+}
