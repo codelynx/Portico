@@ -1806,7 +1806,7 @@ public class PorticoTextLayoutEngine {
 
 		var union = CGRect.null
 		for (line, origin) in zip(lines, origins) {
-			var local = CTLineGetBoundsWithOptions(line, [.useGlyphPathBounds])
+			let local = CTLineGetBoundsWithOptions(line, [.useGlyphPathBounds])
 			// 縦中横 ink: hidden originals contribute ~NOTHING here — the
 			// suppression shrinks them to a sub-pixel font on the layout copy
 			// (their paths collapse), so whole-line bounds stay tight without
