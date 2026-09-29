@@ -409,17 +409,20 @@ public class PorticoTextView: UIView, UITextInput {
 	private func observeUndoForSelectionRefresh() {
 		let manager = layoutEngine.undoManager
 		func observe(_ name: Notification.Name, will: Bool) {
+			// `queue: nil` delivers on the posting thread, and undo/redo runs on the main thread — asserted, not assumed.
 			let token = NotificationCenter.default.addObserver(forName: name, object: manager, queue: nil) { [weak self] _ in
-				guard let self else { return }
-				// Skip while composing: our own undo is blocked (vend-nil), but a *shared injected*
-				// manager can fire for the host's own undo/redo — don't poke the IME mid-composition.
-				guard self.layoutEngine.markedRange == nil else { return }
-				if will {
-					self.inputDelegate?.textWillChange(self)
-					self.inputDelegate?.selectionWillChange(self)
-				} else {
-					self.inputDelegate?.selectionDidChange(self)
-					self.inputDelegate?.textDidChange(self)
+				MainActor.assumeIsolated {
+					guard let self else { return }
+					// Skip while composing: our own undo is blocked (vend-nil), but a *shared injected*
+					// manager can fire for the host's own undo/redo — don't poke the IME mid-composition.
+					guard self.layoutEngine.markedRange == nil else { return }
+					if will {
+						self.inputDelegate?.textWillChange(self)
+						self.inputDelegate?.selectionWillChange(self)
+					} else {
+						self.inputDelegate?.selectionDidChange(self)
+						self.inputDelegate?.textDidChange(self)
+					}
 				}
 			}
 			undoObservers.append(token)
