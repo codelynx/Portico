@@ -307,3 +307,22 @@ Witness folds (snap `7b3c34e`, unmark `f5a0d7d`) approved by all three. Blockers
 Drain note (reviewer-verified, by construction): MangaLoft's save-drain finalizes
 via `unmarkText`, so a drain mid-`《ねこ》` composition now converts THEN commits —
 identical to what typing would have produced.
+
+## 0.6.0 SHIPPED (2026-07-04) — and the next slice
+
+Tagged `0.6.0` on main (`c6f1a98`), develop + main + tag pushed. MangaLoft companion
+opt-in pushed (`a974babf`). Suite 264 green; Mac witness V1–V8 green (two folds:
+apply-snap, unmark-commit conversion); iPad rows deferred to the scheduled device
+session.
+
+**Next slice — partial-cell selection highlight (0.6.x/0.7).** Operator wish from the
+post-gate witness: Shift+↑ through a combined cell paints as one atomic jump. The
+STORED selection already steps per character (`moveCursor` extension has no group
+snap) — only the whole-cell highlight rule (W10) makes it look atomic. Fix: in
+selection-rect computation, a PARTIALLY covered group clips its cell rect in the
+cell's local inline direction via the mini-line's per-glyph offsets
+(`CTLineGetOffsetForStringIndex` — geometry already built for interior carets/gap
+taps). No view-layer changes (both platforms consume `selectionRects`); W9 grabber
+edges inherit the smooth movement; W10's whole-cell test gets a documented
+supersession. Own review-and-witness cycle; pairs with the deferred iPad grabber
+rows.

@@ -111,6 +111,12 @@ public struct PorticoView: UIViewRepresentable {
 	/// Injected-engine hosts that open the editor programmatically (overlay
 	/// pattern) set this so typing lands in the editor without a click/tap.
 	private var focusesOnMount: Bool = false
+	/// Optional accessory factory, resolved once at view creation (the bar
+	/// docks above the software keyboard; see
+	/// `PorticoTextView.hostInputAccessoryView`).
+	private var inputAccessoryProvider: (@MainActor () -> UIView?)?
+	/// Clean-state hardware-Esc hook (see `PorticoTextView.hostEscapeHandler`).
+	private var onEscape: (@MainActor () -> Void)?
 
 	/// Convenience: Portico owns the engine internally, driven by the `text` binding. Undo history
 	/// is **view-scoped**. For document/model-scoped undo that survives view teardown, use
@@ -139,12 +145,16 @@ public struct PorticoView: UIViewRepresentable {
 				selectedRange: Binding<NSRange?>? = nil,
 				onSelectionMenuAction: PorticoSelectionMenuAction? = nil,
 				selectionMenuActions: PorticoSelectionMenuProvider? = nil,
-				focusesOnMount: Bool = false) {
+				focusesOnMount: Bool = false,
+				inputAccessoryView: (@MainActor () -> UIView?)? = nil,
+				onEscape: (@MainActor () -> Void)? = nil) {
 		self.providedEngine = engine
 		self.orientation = orientation
 		self.selectedRange = selectedRange
 		self.selectionMenuProvider = selectionMenuActions ?? onSelectionMenuAction.map { action in { _ in [action] } }
 		self.focusesOnMount = focusesOnMount
+		self.inputAccessoryProvider = inputAccessoryView
+		self.onEscape = onEscape
 	}
 
 	public func makeUIView(context: Context) -> PorticoTextView {
@@ -164,11 +174,20 @@ public struct PorticoView: UIViewRepresentable {
 		let view = PorticoTextView(frame: .zero, layoutEngine: engine)
 		view.selectionMenuProvider = selectionMenuProvider
 		view.focusesOnMount = focusesOnMount
+		view.hostInputAccessoryView = inputAccessoryProvider?()
+		view.hostEscapeHandler = onEscape
 		return view
 	}
 
 	public func updateUIView(_ uiView: PorticoTextView, context: Context) {
 		uiView.selectionMenuProvider = selectionMenuProvider // refresh each render to avoid a stale closure
+		// Same staleness rule for the escape hook (review F4): a host that
+		// changes or removes it must take effect — `keyCommands` is computed
+		// per key event, so the swap alone is sufficient. The accessory
+		// VIEW deliberately stays creation-time (documented: resolved once;
+		// rebuilding a UIToolbar per SwiftUI render would churn
+		// reloadInputViews for nothing).
+		uiView.hostEscapeHandler = onEscape
 		let engine = uiView.layoutEngine
 		// Only the binding (text:) mode syncs external text into the engine (a document reset).
 		// Injected-engine mode never does — resetting a client's model would clear its undo stack.

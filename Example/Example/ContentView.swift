@@ -33,6 +33,11 @@ struct ContentView: View {
 	@State private var outlineWidth: CGFloat = 2
 	@State private var pitchMultiplier: CGFloat = 1.0
 	@State private var measured: CGSize = .zero
+	// Host-transform demo: the HOST rotates/scales the view; Portico lays out in its own
+	// coordinates and must stay correct (caret, hit-test, selection, IME, menus) under it.
+	@State private var rotationDegrees: Double = 0
+	@State private var scaleFactor: CGFloat = 1
+	@State private var boxed = false
 
 	/// One in-flight ruby edit: the target range and where to anchor the popover.
 	private struct RubyEdit {
@@ -78,6 +83,29 @@ struct ContentView: View {
 				}
 			}
 
+			// Host transform: rotation + scale applied OUTSIDE Portico, the way a drawing app poses
+			// a text box. Nothing in Portico knows about it.
+			HStack(spacing: 12) {
+				Slider(value: $rotationDegrees, in: -180...180) { Text("Rotate") }
+					.frame(maxWidth: 200)
+				Text("\(Int(rotationDegrees))°")
+					.font(.caption.monospacedDigit())
+					.frame(width: 40, alignment: .trailing)
+				Slider(value: $scaleFactor, in: 0.5...3) { Text("Scale") }
+					.frame(maxWidth: 160)
+				Text(String(format: "%.2f×", scaleFactor))
+					.font(.caption.monospacedDigit())
+					.frame(width: 44, alignment: .trailing)
+				Toggle("Box", isOn: $boxed)
+					.help("Fixed-size text box, the way a lettering app places one")
+				Button("Reset") {
+					rotationDegrees = 0
+					scaleFactor = 1
+				}
+				.disabled(rotationDegrees == 0 && scaleFactor == 1)
+				Spacer()
+			}
+
 			// engine: mode. Select any text → native edit menu → Ruby… opens this popover (one
 			// undoable engine.setRuby step) or 縦中横 toggles the selection (0.6.0: the provider is
 			// evaluated at menu-open, so the title reads 縦中横／縦中横を解除 from current state;
@@ -97,10 +125,17 @@ struct ContentView: View {
 								},
 							]
 						})
-				.frame(maxWidth: .infinity, maxHeight: .infinity)
+				.frame(maxWidth: boxed ? 420 : .infinity, maxHeight: boxed ? 320 : .infinity)
 				.background(Color(white: 0.85)) // shows off the white outline halo
 				.border(Color.gray)
+				// The popover rides INSIDE the host transform: the menu's anchor rect is in the
+				// text view's own coordinates, so it only lines up in that space. The popover
+				// then undoes the transform on itself so the field stays upright and unscaled.
 				.overlay(alignment: .topLeading) { rubyPopover }
+				.scaleEffect(scaleFactor)
+				.rotationEffect(.degrees(rotationDegrees))
+				.frame(maxWidth: .infinity, maxHeight: .infinity)
+				.clipped()
 				.ignoresSafeArea(.keyboard, edges: .bottom)
 		}
 		.padding()
@@ -189,6 +224,8 @@ struct ContentView: View {
 					.frame(width: editorWidth, height: editorHeight)
 					.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
 					.overlay(RoundedRectangle(cornerRadius: 8).stroke(.secondary))
+					.scaleEffect(1 / scaleFactor, anchor: .topLeading)
+					.rotationEffect(.degrees(-rotationDegrees), anchor: .topLeading)
 					.offset(x: max(0, min(edit.anchor.minX, geo.size.width - editorWidth)),
 							y: max(0, min(preferredY, geo.size.height - editorHeight)))
 			}

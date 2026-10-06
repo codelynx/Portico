@@ -297,7 +297,12 @@ private func inkedBBox(_ engine: PorticoTextLayoutEngine, band: ClosedRange<CGFl
 	// "あ12う": the group's ink sits in the SECOND cell band (between the
 	// kana), not at the column ends.
 	let engine = tcyEngine("あ12う")
-	let cellBand: ClosedRange<CGFloat> = 14...28 // second cell, top-down pt
+	// Second cell, top-down pt — its INTERIOR. ⚠️ The closed band 14...28 also caught one
+	// antialiased row of each neighbouring kana, so the "wide" check only held while the column
+	// was over-wide (15 px compression at the old 2.5 em pitch). At the true 1.5 em pitch the
+	// pair compresses to exactly one em (14 px) and the edge rows made it read 14 × 14
+	// (2026-09-25). The interior still proves the pair is upright: 14 × 11.
+	let cellBand: ClosedRange<CGFloat> = 15...27
 	let bbox = inkedBBox(engine, band: cellBand)
 	#expect(!bbox.isNull, "group ink present in its cell band")
 	#expect(bbox.width > bbox.height, "and upright (wide), got \(bbox)")

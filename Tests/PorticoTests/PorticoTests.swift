@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import CoreGraphics
+import CoreText
 #if canImport(AppKit)
 import AppKit
 #endif
@@ -457,6 +458,35 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 	_ = PorticoTextView(frame: .zero, layoutEngine: e)
 	#expect(e.undoManager.canUndo) // wrapping the engine in a view left the stack intact
 }
+
+#if canImport(UIKit)
+import UIKit
+
+/// Records the `inputDelegate` brackets the view fires.
+private final class InputDelegateSpy: NSObject, UITextInputDelegate {
+	var calls: [String] = []
+	func selectionWillChange(_ textInput: (any UITextInput)?) { calls.append("selectionWill") }
+	func selectionDidChange(_ textInput: (any UITextInput)?) { calls.append("selectionDid") }
+	func textWillChange(_ textInput: (any UITextInput)?) { calls.append("textWill") }
+	func textDidChange(_ textInput: (any UITextInput)?) { calls.append("textDid") }
+	@available(iOS 18.4, *) func conversationContext(_ context: UIConversationContext?, didChange textInput: (any UITextInput)?) {}
+}
+
+@Test func undoBracketsTheInputDelegateOnTheMainThread() {
+	// Mechanism: the view observes the engine's UndoManager (queue nil, so on the posting thread — the main one)
+	// and brackets each undo for `UITextInteraction`. The observer asserts the main actor; an undo off it traps.
+	// Wrong world: no bracket, and the IME's cached selection goes stale after ⌘Z.
+	let e = engine("")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	let spy = InputDelegateSpy()
+	view.inputDelegate = spy
+	e.insertText("abc")
+	spy.calls = []
+	e.undoManager.undo()
+	#expect(spy.calls == ["textWill", "selectionWill", "selectionDid", "textDid"])
+	#expect(e.attributedString.string == "")
+}
+#endif
 
 @Test func engineDeallocatesDespiteUndoRegistrations() {
 	// Retain-cycle contract: the manager holds the engine unowned and the handler captures only

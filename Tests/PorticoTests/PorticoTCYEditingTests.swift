@@ -193,21 +193,64 @@ private func relayout(_ engine: PorticoTextLayoutEngine) {
 
 // MARK: - Selection semantics
 
-@Test @MainActor func selectionIntersectingGroupShowsWholeCell() {
+@Test @MainActor func partialSelectionClipsCellInLocalInlineDirection() {
+	// 0.6.x partial-highlight slice — SUPERSEDES the slice-4 P5 whole-cell
+	// pin (selectionIntersectingGroupShowsWholeCell): half-a-pair highlights
+	// were "meaningless" only while nothing could draw them; the mini-line
+	// glyph offsets (built for interior carets/gap taps) can. A partially
+	// covered group now clips its cell rect in the cell's LOCAL inline
+	// direction (horizontal), full cell height — so the highlight edge moves
+	// through the cell exactly as the stored per-character selection does.
 	let engine = editEngine("あ12う")
 	guard let cell = engine.tateChuYokoCell(for: NSRange(location: 1, length: 2)) else {
 		Issue.record("cell missing"); return
 	}
-	// Half-a-pair selection: the visual rect spans the WHOLE cell.
-	let rects = engine.selectionRects(for: NSRange(location: 1, length: 1))
+	let left = engine.selectionRects(for: NSRange(location: 1, length: 1))  // the "1"
+	let right = engine.selectionRects(for: NSRange(location: 2, length: 1)) // the "2"
+	#expect(left.count == 1 && right.count == 1)
+	guard let l = left.first, let r = right.first else { return }
+	// Full cell height, partial width — each digit's rect is a strict sub-cell.
+	#expect(abs(l.height - cell.height) <= 1 && abs(r.height - cell.height) <= 1,
+	        "partial rects keep the full cell height")
+	#expect(l.width < cell.width - 0.5 && r.width < cell.width - 0.5,
+	        "partial rects are narrower than the cell (l \(l), r \(r), cell \(cell))")
+	// The two halves TILE: left ends where right begins, and together they
+	// span the drawn mini-line (within the cell).
+	#expect(abs(l.maxX - r.minX) <= 0.5, "halves share the interior gap edge")
+	#expect(l.minX >= cell.minX - 0.5 && r.maxX <= cell.maxX + 0.5,
+	        "both stay inside the cell")
+	// The stored range is untouched (editing granularity stays per-character).
+	engine.setSelectedRange(NSRange(location: 1, length: 1))
+	#expect(engine.selectionRange == NSRange(location: 1, length: 1))
+}
+
+@Test @MainActor func fullySelectedGroupStillPaintsWholeCell() {
+	let engine = editEngine("あ12う")
+	guard let cell = engine.tateChuYokoCell(for: NSRange(location: 1, length: 2)) else {
+		Issue.record("cell missing"); return
+	}
+	let rects = engine.selectionRects(for: NSRange(location: 1, length: 2))
 	#expect(rects.count == 1)
 	if let rect = rects.first {
 		#expect(abs(rect.height - cell.height) <= 1,
-		        "half-group selection (\(rect)) shows the whole cell (\(cell))")
+		        "full-group selection (\(rect)) spans the whole cell (\(cell))")
 	}
-	// The stored range is NOT mutated by the visual expansion.
-	engine.setSelectedRange(NSRange(location: 1, length: 1))
-	#expect(engine.selectionRange == NSRange(location: 1, length: 1))
+}
+
+@Test @MainActor func selectionCrossingCellBoundaryTilesPlainPlusPartial() {
+	// あ1 — a plain char plus half the cell: one plain rect (あ, column-shaped)
+	// and one partial-cell rect (the 1), NOT a single merged whole-cell rect.
+	let engine = editEngine("あ12う")
+	guard let cell = engine.tateChuYokoCell(for: NSRange(location: 1, length: 2)) else {
+		Issue.record("cell missing"); return
+	}
+	let rects = engine.selectionRects(for: NSRange(location: 0, length: 2))
+	#expect(rects.count == 2, "plain fragment + partial cell, got \(rects)")
+	// The group's contribution is narrower than the cell — the visible edge
+	// sits INSIDE the cell (the per-digit movement itself is pinned by the
+	// tiling assertions in partialSelectionClipsCellInLocalInlineDirection).
+	let partial = rects.min { $0.width < $1.width }
+	if let partial { #expect(partial.width < cell.width - 0.5) }
 }
 
 @Test @MainActor func interiorTapResolvesByMiniLineGap() {
@@ -336,4 +379,44 @@ private func relayout(_ engine: PorticoTextLayoutEngine) {
 	// And from a column-1 position, left lands in column 2.
 	let back = engine.index(from: 1, moving: .left)
 	#expect(back >= 3, "left-hop from column 1 lands in column 2, got \(back)")
+}
+
+@Test @MainActor func selectionStartingInsideCellKeepsDocumentOrder() {
+	// Ordering blocker (review): rects must come back in DOCUMENT order —
+	// firstSegmentRect takes .first as the anchor and the iOS bridge assigns
+	// containsStart/containsEnd from array ends. A selection STARTING inside
+	// a cell ("2う") must yield [partial(2), plain(う)], never plain-first.
+	let engine = editEngine("あ12う")
+	guard let cell = engine.tateChuYokoCell(for: NSRange(location: 1, length: 2)) else {
+		Issue.record("cell missing"); return
+	}
+	let rects = engine.selectionRects(for: NSRange(location: 2, length: 2)) // 2う
+	#expect(rects.count == 2, "partial + plain, got \(rects)")
+	guard rects.count == 2 else { return }
+	#expect(rects[0].width < cell.width - 0.5, "first rect is the PARTIAL cell slice")
+	#expect(rects[0].minY >= cell.minY - 1 && rects[0].maxY <= cell.maxY + 1,
+	        "first rect sits inside the cell")
+	#expect(rects[1].maxY <= cell.minY + 1, "second rect (う) follows BELOW the cell")
+}
+
+@Test @MainActor func threeTileSelectionOrdersPartialPlainPartial() {
+	// Multi-partial pin (review): tail of cell A + plain + head of cell B →
+	// exactly three rects, in document order, tiling without overlap. This is
+	// the fixture the deferred iPad grabber session re-runs with fingers.
+	let engine = editEngine("12あ34")
+	guard let cellA = engine.tateChuYokoCell(for: NSRange(location: 0, length: 2)),
+	      let cellB = engine.tateChuYokoCell(for: NSRange(location: 3, length: 2)) else {
+		Issue.record("cells missing"); return
+	}
+	let rects = engine.selectionRects(for: NSRange(location: 1, length: 3)) // 2あ3
+	#expect(rects.count == 3, "partial + plain + partial, got \(rects)")
+	guard rects.count == 3 else { return }
+	#expect(rects[0].width < cellA.width - 0.5
+	        && rects[0].minY >= cellA.minY - 1 && rects[0].maxY <= cellA.maxY + 1,
+	        "first rect = tail slice of cell A")
+	#expect(rects[1].maxY <= cellA.minY + 1 && rects[1].minY >= cellB.maxY - 1,
+	        "second rect = plain あ between the cells")
+	#expect(rects[2].width < cellB.width - 0.5
+	        && rects[2].minY >= cellB.minY - 1 && rects[2].maxY <= cellB.maxY + 1,
+	        "third rect = head slice of cell B")
 }

@@ -2,6 +2,43 @@
 
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
+## [Unreleased]
+
+## [0.7.0] - 2026-10-06
+### Added — transformed hosts
+- **Rotated / scaled hosts are supported and tested** on macOS and iOS: a host may pose the view
+  with `rotationEffect` / `scaleEffect`; hit-testing, selection, menus and the input-method
+  candidate anchor follow it (`PorticoHostTransformTests`). README §7 documents the two host
+  duties: anchor rects are view-local, and the macOS ±45°/±135° AppKit assertion.
+- **Sheared hosts** (a rotation followed by a non-uniform scale): the input-method anchor and
+  click/tap-to-caret are tested exact on both platforms (`…ShearedHost` tests).
+- **Example:** Rotate / Scale / Box controls; the ruby popover rides inside the transform.
+
+### Changed — ruby is drawn by Portico
+- **The base text lays out as if the ruby were absent.** Core Text's own ruby moved a word whose
+  reading is longer than it (by half the excess at a line start) and shifted lines carrying ruby,
+  so columns sat unevenly. The layout copy now strips the reading; Portico draws each reading
+  itself, centred on its word (`rubyPlacements`, fill and 縁取り passes), free to overshoot the
+  box and overlap neighbours. `inkBounds` includes the ruby; `measuredSize` does not.
+- **A ruby word never breaks across lines** (unless it is longer than a whole line): the layout
+  copy carries a vestigial ruby (U+200B, size 0.01) on such groups. String indices are unchanged.
+- ⚠️ **Visible change:** existing ruby text re-lays out.
+
+### Fixed
+- **Line pitch is the real column advance, 1.5 em by default.** The pitch was measured from a
+  line carrying ruby (2.0 em), and Core Text then added the font's leading again between the
+  fixed-height lines, so 14 pt Hiragino columns sat 2.5 em apart — gaps wider than the letters.
+  The pitch is now the font's natural line (glyph box + its own leading: 1.5 em for Hiragino,
+  with half-size ruby fitting in the half-em gap), and the layout copy carries a Core Text
+  paragraph style that pins line spacing, so `linePitchMultiplier` scales the real advance
+  exactly in both orientations. ⚠️ **Visible change:** existing text lays out tighter.
+- The test target now compiles for iOS (`import CoreText`).
+- **The empty-document caret vanished in a box smaller than one line.** The probe that places it
+  was laid out in the box itself; when the ruby-aware line pitch did not fit (a host sizing its
+  empty editor to the zero measurement plus a small minimum), Core Text laid out no line and the
+  caret was a zero rect until the first keystroke. It now lays out in a box at least one cell big,
+  pinned at the writing-start edges.
+
 ## [0.6.0] - 2026-07-04
 ### Added — 縦中横 overrides + the OWNED notation
 The artist-intent layer over 0.5.0's automatic rule, and the release where the
