@@ -3,6 +3,8 @@
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
+
+## [0.7.0] - 2026-10-06
 ### Added — transformed hosts
 - **Rotated / scaled hosts are supported and tested** on macOS and iOS: a host may pose the view
   with `rotationEffect` / `scaleEffect`; hit-testing, selection, menus and the input-method
