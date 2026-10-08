@@ -3,6 +3,11 @@
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
+### Fixed
+- **macOS: Esc in the editor reaches the host.** `PorticoTextView` dropped `cancelOperation:` (and
+  every other command it did not name), so a host's `onExitCommand` never fired. The macOS view
+  now has the same `hostEscapeHandler` the iOS view has, `PorticoView(engine:…, onEscape:)` sets
+  it, and with no hook the command goes up the responder chain. Never fires while composing.
 
 ## [0.7.0] - 2026-10-06
 ### Added — transformed hosts
