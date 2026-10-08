@@ -317,6 +317,44 @@ private func engine(_ s: String, orientation: PorticoLayoutOrientation = .horizo
 	#expect(view.undoManager === e.undoManager) // restored after commit
 }
 
+#if os(macOS)
+// Esc on macOS arrives as `cancelOperation:` through `doCommand(by:)`. Wrong world: the view drops
+// it (it did — every unnamed command was dropped), so a host can never commit on Esc.
+@Test func macEscapeReachesTheHostHookButNeverWhileComposing() {
+	let e = engine("abc")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	var escapes = 0
+	view.hostEscapeHandler = { escapes += 1 }
+
+	view.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+	#expect(escapes == 1)
+
+	e.setMarkedText("か", selectedRange: NSRange(location: 0, length: 1), replacementRange: nil)
+	view.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+	#expect(escapes == 1) // composing: Esc is the input method's
+	#expect(e.markedRange != nil) // and the composition was left alone
+
+	// Other commands are unaffected by the hook.
+	e.insertText("感")
+	view.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+	#expect(e.attributedString.string.contains("\n"))
+	#expect(escapes == 1)
+}
+
+// With no hook the command goes up the responder chain instead of being dropped.
+@Test func macEscapeWithoutAHookGoesUpTheResponderChain() {
+	final class Catcher: NSResponder {
+		var cancels = 0
+		override func cancelOperation(_ sender: Any?) { cancels += 1 }
+	}
+	let view = PorticoTextView(frame: .zero, layoutEngine: engine("abc"))
+	let catcher = Catcher()
+	view.nextResponder = catcher
+	view.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+	#expect(catcher.cancels == 1)
+}
+#endif
+
 // MARK: - Trailing line break = extra line fragment (closing-smoke A2 finding)
 
 @Test func trailingNewlineReservesOneLinePitchInMeasure() {

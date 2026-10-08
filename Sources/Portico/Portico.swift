@@ -31,6 +31,8 @@ public struct PorticoView: NSViewRepresentable {
 	/// Injected-engine hosts that open the editor programmatically (overlay
 	/// pattern) set this so typing lands in the editor without a click/tap.
 	private var focusesOnMount: Bool = false
+	/// Clean-state Esc hook (see `PorticoTextView.hostEscapeHandler`).
+	private var onEscape: (@MainActor () -> Void)?
 
 	/// Convenience: Portico owns the engine internally, driven by the `text` binding. Undo history
 	/// is **view-scoped** (lives with this view). For document/model-scoped undo that survives view
@@ -58,12 +60,14 @@ public struct PorticoView: NSViewRepresentable {
 				selectedRange: Binding<NSRange?>? = nil,
 				onSelectionMenuAction: PorticoSelectionMenuAction? = nil,
 				selectionMenuActions: PorticoSelectionMenuProvider? = nil,
-				focusesOnMount: Bool = false) {
+				focusesOnMount: Bool = false,
+				onEscape: (@MainActor () -> Void)? = nil) {
 		self.providedEngine = engine
 		self.orientation = orientation
 		self.selectedRange = selectedRange
 		self.selectionMenuProvider = selectionMenuActions ?? onSelectionMenuAction.map { action in { _ in [action] } }
 		self.focusesOnMount = focusesOnMount
+		self.onEscape = onEscape
 	}
 
 	public func makeNSView(context: Context) -> PorticoTextView {
@@ -83,11 +87,13 @@ public struct PorticoView: NSViewRepresentable {
 		let view = PorticoTextView(frame: .zero, layoutEngine: engine)
 		view.selectionMenuProvider = selectionMenuProvider
 		view.focusesOnMount = focusesOnMount
+		view.hostEscapeHandler = onEscape
 		return view
 	}
 
 	public func updateNSView(_ nsView: PorticoTextView, context: Context) {
 		nsView.selectionMenuProvider = selectionMenuProvider // refresh each render to avoid a stale closure
+		nsView.hostEscapeHandler = onEscape
 		let engine = nsView.layoutEngine
 		// Only the binding (text:) mode syncs external text into the engine (a document reset).
 		// Injected-engine mode never does — that's the client's model, and a reset would clear undo.

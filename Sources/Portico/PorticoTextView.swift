@@ -106,8 +106,25 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 		}
 	}
 	
+	/// Host hook for a CLEAN-STATE Escape — the macOS twin of the iOS view's `hostEscapeHandler`.
+	///
+	/// ⛔ Without it Esc did nothing here: the input context turns the key into `cancelOperation:`,
+	/// `doCommand(by:)` below dropped every selector it did not name, and so the command never
+	/// travelled up the responder chain — a host's `onExitCommand` was never called.
+	/// A composing typist's Esc belongs to the input method and does not arrive as a command; the
+	/// marked-text guard keeps that true even if one does.
+	public var hostEscapeHandler: (() -> Void)?
+
 	public override func doCommand(by selector: Selector) {
-		if selector == #selector(insertNewline(_:)) {
+		if selector == #selector(cancelOperation(_:)) {
+			guard layoutEngine.markedRange == nil else { return }
+			if let hostEscapeHandler {
+				hostEscapeHandler()
+			} else {
+				// No hook: let the responder chain have it, as an unhandled command should.
+				super.doCommand(by: selector)
+			}
+		} else if selector == #selector(insertNewline(_:)) {
 			// Return outside composition = a hard line break (during
 			// composition the input context consumes Return to confirm, so
 			// this arm never sees it). Without this arm the command falls
