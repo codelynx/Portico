@@ -3,6 +3,8 @@
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
+
+## [0.7.1] - 2026-10-08
 ### Fixed
 - **macOS: Esc in the editor reaches the host.** `PorticoTextView` dropped `cancelOperation:` (and
   every other command it did not name), so a host's `onExitCommand` never fired. The macOS view
