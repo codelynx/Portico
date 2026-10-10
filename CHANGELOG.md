@@ -4,6 +4,15 @@ Notable changes to Portico. Pre-1.0, minor versions may include breaking changes
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-09
+### Added
+- **`setDocumentAttributes(_:)` — change the whole document's look while it is being edited.** Font, colour,
+  paragraph style and the like are laid over every character and become the typing attributes; ruby, 縦中横
+  overrides, marked text, the caret and the selection are untouched. Like `outline` and
+  `linePitchMultiplier` it is not an edit: no undo step, the undo history is kept (unlike
+  `update(attributedString:)`, which resets it), and text restored by undo or redo wears the current
+  attributes. `documentAttributes` reads back the last set given.
+
 ## [0.7.1] - 2026-10-08
 ### Fixed
 - **macOS: Esc in the editor reaches the host.** `PorticoTextView` dropped `cancelOperation:` (and
