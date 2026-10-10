@@ -3,6 +3,8 @@
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
+
+## [0.7.2] - 2026-10-09
 ### Added
 - **`setDocumentAttributes(_:)` — change the whole document's look while it is being edited.** Font, colour,
   paragraph style and the like are laid over every character and become the typing attributes; ruby, 縦中横
