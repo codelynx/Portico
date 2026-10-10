@@ -270,6 +270,17 @@ let anchor = engine.anchorRectForSelection()         // first-segment popover an
 
 Observe changes with `engine.textDidChange` / `engine.selectionDidChange`.
 
+**One look for the whole document, changed while editing.** A host whose text has one font, colour and alignment
+per object can change them from an inspector without closing the editor:
+
+```swift
+engine.setDocumentAttributes([.font: newFont, .foregroundColor: ink, .paragraphStyle: paragraph])
+```
+
+The text, its ruby and 縦中横, the caret, the selection and an input-method composition in flight all stay. It is
+not an edit: no undo step is registered and the undo history is kept; text brought back by a later undo wears the
+current look. `textDidChange` does not fire — re-measure yourself if your view is sized from `measuredSize`.
+
 ### 7. Transformed hosts (rotate / scale)
 
 A drawing app can pose a text box by rotating and scaling the view from outside — Portico keeps

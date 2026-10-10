@@ -198,7 +198,9 @@ public class PorticoTextLayoutEngine {
 	private func restore(_ snapshot: EditSnapshot) {
 		typingRunOpen = false
 		preCompositionSnapshot = nil
-		attributedString = snapshot.attributedString
+		// A snapshot taken before `setDocumentAttributes` carries the old look; the document's
+		// attributes are not part of the history, so they are laid back over it.
+		attributedString = applyingDocumentAttributes(to: snapshot.attributedString)
 		cursorIndex = snapshot.cursorIndex
 		markedRange = nil
 		selectionAnchorIndex = snapshot.selectionAnchorIndex // restore the anchor, not just the range
@@ -250,9 +252,53 @@ public class PorticoTextLayoutEngine {
 		undoManager.removeAllActions(withTarget: self)
 		typingRunOpen = false
 		preCompositionSnapshot = nil
+		documentAttributes = nil // the new document brings its own look
 		self.attributedString = attributedString
 		clampEditStateToBounds()
 		updateLayout()
+	}
+
+	// MARK: - Whole-document attributes
+
+	/// The attributes last given to `setDocumentAttributes`, nil until it is called (and again
+	/// after `update(attributedString:)`).
+	public private(set) var documentAttributes: [NSAttributedString.Key: Any]?
+
+	/// Give the WHOLE document these attributes (font, colour, paragraph style, …) while it is
+	/// being edited — for a host whose text has one look per object and changes it from an
+	/// inspector. Every other attribute stays: ruby, 縦中横 overrides and the input method's
+	/// marked text are untouched, and so are the caret, the selection and a composition in flight.
+	///
+	/// Like `outline` and `linePitchMultiplier` this is a property of the document, not an edit:
+	/// it registers NO undo step and keeps the undo history, and an undo or redo across it
+	/// restores the text in the CURRENT attributes. `typingAttributes` becomes the same set, so
+	/// an emptied document keeps the look. `textDidChange` does not fire (the caller made the
+	/// change); a client that sizes its view from `measuredSize` re-measures after calling.
+	/// Ruby, 縦中横 and marked-text keys in `attributes` are ignored.
+	public func setDocumentAttributes(_ attributes: [NSAttributedString.Key: Any]) {
+		var attributes = attributes
+		for key in Self.contentAttributeKeys { attributes.removeValue(forKey: key) }
+		guard !attributes.isEmpty else { return }
+		documentAttributes = attributes
+		typingAttributes = attributes
+		let restyled = applyingDocumentAttributes(to: attributedString)
+		guard !restyled.isEqual(attributedString) else { return }
+		attributedString = restyled
+		updateLayout()
+	}
+
+	/// Attributes that are content, never look — `setDocumentAttributes` may not write them.
+	private static let contentAttributeKeys: [NSAttributedString.Key] = [
+		PorticoRuby.rubyKey,
+		PorticoTateChuYoko.overrideKey,
+		NSAttributedString.Key(kCTUnderlineStyleAttributeName as String),
+	]
+
+	private func applyingDocumentAttributes(to string: NSAttributedString) -> NSAttributedString {
+		guard let documentAttributes, string.length > 0 else { return string }
+		let restyled = NSMutableAttributedString(attributedString: string)
+		restyled.addAttributes(documentAttributes, range: NSRange(location: 0, length: restyled.length))
+		return restyled
 	}
 
 	/// Normalize cursor/selection/marked state into the current string bounds. A client can drive
