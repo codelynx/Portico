@@ -980,3 +980,20 @@ private func wrappingEngine(_ s: String, width: CGFloat = 60) -> PorticoTextLayo
 	#expect(e.upstreamCaret == nil)
 }
 #endif
+
+#if os(macOS)
+@Test @MainActor func aReplacedDocumentNeverInheritsTheLineEndCaret() throws {
+	let e = wrappingEngine("first word second word third")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 0, length: 0))
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	#expect(e.upstreamCaret != nil, "premise")
+	e.update(attributedString: NSAttributedString(string: "first Word second word third")) // same length, same wrap
+	#expect(e.upstreamCaret == nil)
+	// An identical update is a no-op and keeps it.
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	let pinned = try #require(e.upstreamCaret)
+	e.update(attributedString: NSAttributedString(string: "first Word second word third"))
+	#expect(e.upstreamCaret?.index == pinned.index)
+}
+#endif

@@ -248,6 +248,7 @@ public class PorticoTextLayoutEngine {
 		// A change in content is a document reset. Identical content is a no-op: keep undo history
 		// (a direct-engine client calling this idempotently mustn't lose its stack) and skip relayout.
 		guard !self.attributedString.isEqual(attributedString) else { return }
+		upstreamCaret = nil // a new document never inherits the old one's line-end pin, even at the same length and wrap
 		// Document reset: clear only *our* registered actions (never the whole manager — a
 		// host-injected one owns the app's history too), and end any typing run.
 		undoManager.removeAllActions(withTarget: self)

@@ -7,7 +7,8 @@ Notable changes to Portico. Pre-1.0, minor versions may include breaking changes
 - **The upstream (line-end) caret is re-checked on every relayout** — undo/redo, marked text, attributes, bounds,
   orientation: it survives only while its index still ends a soft-wrapped line (an ink change keeps it; a hard break
   restored there drops it), so it can no longer draw on the wrong line. Undo/redo and marked text always drop it, and
-  a wrap that ends in an emoji (a surrogate pair) still counts as a soft wrap.
+  a wrap that ends in an emoji (a surrogate pair) still counts as a soft wrap. Replacing the document
+  (`update(attributedString:)` with different content) drops it too.
 - **Paragraph moves (⌃A/⌃E, ⇧⌥↑/⇧⌥↓) treat only LF, CR and U+2029 as paragraph breaks**; U+2028, U+000B and U+0085
   end a line only, as in NSTextView.
 - **Repeated ⇧⌥↑/⇧⌥↓ keeps extending paragraph by paragraph** (new `MoveUnit.paragraphBackward`/`paragraphForward`);
