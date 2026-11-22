@@ -197,6 +197,7 @@ public class PorticoTextLayoutEngine {
 	/// clear the stack). Not `update(attributedString:)` — that's the document-reset path.
 	private func restore(_ snapshot: EditSnapshot) {
 		typingRunOpen = false
+		upstreamCaret = nil // an undo/redo restores a caret, never the outgoing state's line-end pin (review 2026-11-22)
 		preCompositionSnapshot = nil
 		// A snapshot taken before `setDocumentAttributes` carries the old look; the document's
 		// attributes are not part of the history, so they are laid back over it.
@@ -413,6 +414,7 @@ public class PorticoTextLayoutEngine {
 
 	public func setMarkedText(_ text: String, selectedRange: NSRange, replacementRange: NSRange?) {
 		typingRunOpen = false // IME composition boundary breaks a typing run; no undo step while marked
+		upstreamCaret = nil // composition moves the caret; a same-length replacement must not keep the old pin
 		if markedRange == nil { preCompositionSnapshot = currentSnapshot() } // composition start
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
 
@@ -584,9 +586,11 @@ public class PorticoTextLayoutEngine {
 			let range = CTLineGetStringRange(line)
 			let end = range.location + range.length
 			guard end == index else { continue }
-			// A line that ends in a line break is a HARD break: its end is the next line's start, not a wrap.
-			guard end > range.location, let last = UnicodeScalar(ns.character(at: end - 1)) else { return false }
-			return !CharacterSet.newlines.contains(last)
+			// A line that ends in a line break is a HARD break: its end is the next line's start, not a wrap. Read the
+			// whole last CHARACTER — an emoji's last UTF-16 unit is half a surrogate pair (review 2026-11-22).
+			guard end > range.location else { return false }
+			let last = ns.substring(with: ns.rangeOfComposedCharacterSequence(at: end - 1))
+			return !last.unicodeScalars.contains(where: CharacterSet.newlines.contains)
 		}
 		return false
 	}

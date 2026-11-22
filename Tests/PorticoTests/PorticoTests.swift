@@ -929,3 +929,54 @@ private func wrappingEngine(_ s: String, width: CGFloat = 60) -> PorticoTextLayo
 	#expect(w.upstreamCaret?.index == w.cursorIndex)
 }
 #endif
+
+#if os(macOS)
+// MARK: - Third review (2026-11-22)
+
+@Test @MainActor func lineEndAtAWrapEndingInAnEmojiStaysOnItsLine() throws {
+	for orientation in [PorticoLayoutOrientation.horizontal, .vertical] {
+		let e = PorticoTextLayoutEngine(attributedString: NSAttributedString(string: "abc😀defghijklmnopqrstuvwxyz😀abcdefghij"),
+										orientation: orientation,
+										bounds: orientation == .horizontal ? CGSize(width: 60, height: 2000) : CGSize(width: 2000, height: 60))
+		let view = PorticoTextView(frame: .zero, layoutEngine: e)
+		e.setSelectedRange(NSRange(location: 0, length: 0))
+		// Line end: ⌘→ across a horizontal line, ⌘↓ down a vertical column (spatial, like the plain arrows).
+		view.doCommand(by: orientation == .horizontal
+			? #selector(NSResponder.moveToRightEndOfLine(_:)) : #selector(NSResponder.moveToEndOfDocument(_:)))
+		let end = e.cursorIndex
+		#expect(end == 5, "after abc😀")
+		#expect(e.upstreamCaret?.index == end, "\(orientation): a soft wrap, even after an emoji")
+		let first = e.caretRect(for: 0)
+		let drawn = e.caretRect(for: end)
+		if orientation == .horizontal {
+			#expect(abs(drawn.midY - first.midY) < 0.5, "same line")
+		} else {
+			#expect(abs(drawn.midX - first.midX) < 0.5, "same column")
+		}
+	}
+}
+
+@Test @MainActor func undoNeverInheritsTheLineEndCaret() throws {
+	let e = wrappingEngine("first word second word third word")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 6, length: 1)) // "w"
+	e.insertText("W") // same length, same wrap
+	e.setSelectedRange(NSRange(location: 0, length: 0))
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	#expect(e.upstreamCaret != nil, "premise")
+	e.undoManager.undo()
+	#expect(e.upstreamCaret == nil)
+}
+
+@Test @MainActor func markedTextDropsTheLineEndCaret() throws {
+	let e = wrappingEngine("abcdefghijklmnopqrstuvwxyz")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 1, length: 0))
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	#expect(e.upstreamCaret != nil, "premise")
+	// Same length: the composition REPLACES one character before the wrap, so length and wrap are unchanged.
+	e.setMarkedText("k", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: 0, length: 1))
+	#expect(e.attributedString.length == 26, "premise: same length")
+	#expect(e.upstreamCaret == nil)
+}
+#endif
