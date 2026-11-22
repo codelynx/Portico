@@ -696,3 +696,94 @@ private final class InputDelegateSpy: NSObject, UITextInputDelegate {
 	#expect(parent.received == [#selector(NSResponder.insertTab(_:))])
 }
 #endif
+
+#if os(macOS)
+// MARK: - Navigation edges (review of 0.7.3)
+
+private func wrappingEngine(_ s: String, width: CGFloat = 60) -> PorticoTextLayoutEngine {
+	PorticoTextLayoutEngine(attributedString: NSAttributedString(string: s), orientation: .horizontal,
+							bounds: CGSize(width: width, height: 2000))
+}
+
+// ⌘→ on a soft-wrapped line ends on THAT line (upstream), and ⌘← right after stays on it.
+@Test @MainActor func lineEndAtASoftWrapStaysOnItsLine() throws {
+	let e = wrappingEngine("abcdefghijklmnopqrstuvwxyz")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 1, length: 0))
+	let firstLineY = e.caretRect(for: 1).midY
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	let wrap = e.cursorIndex
+	#expect(wrap > 1 && wrap < 26, "premise: the text wraps")
+	#expect(abs(e.caretRect(for: wrap).midY - firstLineY) < 0.5, "the caret is drawn at the end of the first line")
+	view.doCommand(by: #selector(NSResponder.moveToLeftEndOfLine(_:)))
+	#expect(e.cursorIndex == 0)
+	// Without the line-end move the same index belongs to the next line.
+	e.setSelectedRange(NSRange(location: wrap, length: 0))
+	#expect(e.caretRect(for: wrap).midY < firstLineY - 1)
+}
+
+@Test @MainActor func theEmptyLineAfterATrailingBreakIsItsOwnLine() {
+	let e = engine("abc\n")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 4, length: 0))
+	view.doCommand(by: #selector(NSResponder.moveToLeftEndOfLine(_:)))
+	#expect(e.cursorIndex == 4)
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	#expect(e.cursorIndex == 4)
+}
+
+@Test @MainActor func lineEndNeverLandsInsideACRLFPair() {
+	let e = engine("ab\r\ncd")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 1, length: 0))
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	#expect(e.cursorIndex == 2)
+}
+
+@Test @MainActor func shiftOptionArrowsExtendByParagraph() {
+	let e = engine("aa\nbb")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 0, length: 0))
+	view.doCommand(by: #selector(NSResponder.moveParagraphForwardAndModifySelection(_:)))
+	#expect(e.selectionRange == NSRange(location: 0, length: 2))
+	e.setSelectedRange(NSRange(location: 4, length: 0))
+	view.doCommand(by: #selector(NSResponder.moveParagraphBackwardAndModifySelection(_:)))
+	#expect(e.selectionRange == NSRange(location: 3, length: 1))
+}
+
+@Test @MainActor func optionUpAndDownMoveByCharacterThenParagraph() {
+	let e = engine("aa\nbb")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 4, length: 0))
+	view.doCommand(by: #selector(NSResponder.moveBackward(_:)))
+	#expect(e.cursorIndex == 3)
+	view.doCommand(by: #selector(NSResponder.moveForward(_:)))
+	#expect(e.cursorIndex == 4)
+}
+
+@Test @MainActor func verticalOptionLeftRightAreConsumedQuietly() {
+	final class Catcher: NSView {
+		var received: [Selector] = []
+		override func doCommand(by selector: Selector) { received.append(selector) }
+	}
+	let parent = Catcher(frame: .zero)
+	let e = engine("一二三", orientation: .vertical)
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	parent.addSubview(view)
+	e.setSelectedRange(NSRange(location: 1, length: 0))
+	view.doCommand(by: #selector(NSResponder.moveWordLeft(_:)))
+	view.doCommand(by: #selector(NSResponder.moveWordRightAndModifySelection(_:)))
+	#expect(parent.received.isEmpty)
+	#expect(e.cursorIndex == 1 && e.selectionRange == nil)
+}
+
+@Test @MainActor func wordMovesTreatATateChuYokoGroupAsOneWord() {
+	let e = engine("前!? 後", orientation: .vertical)
+	e.setSelectedRange(NSRange(location: 2, length: 0)) // between ! and ?
+	e.moveCursor(to: .wordForward)
+	#expect(e.cursorIndex == 3)
+	e.setSelectedRange(NSRange(location: 2, length: 0))
+	e.moveCursor(to: .wordBackward)
+	#expect(e.cursorIndex == 1)
+}
+#endif
