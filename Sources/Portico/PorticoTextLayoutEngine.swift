@@ -559,7 +559,7 @@ public class PorticoTextLayoutEngine {
 	/// The caret at a SOFT-WRAP boundary belongs to the line it ENDS (macOS "upstream" affinity), not the line the
 	/// same index starts — set only by a line-end move, so ⌘→ shows the caret at the end of its own line and a ⌘←
 	/// right after stays on that line. It holds while the caret and the text are unchanged (index and length match).
-	private var upstreamCaret: (index: Int, length: Int)?
+	var upstreamCaret: (index: Int, length: Int)? // internal: tests set it to exercise the relayout rule
 
 	private var caretIsUpstream: Bool {
 		guard let upstreamCaret, selectionRange == nil else { return false }
@@ -579,9 +579,14 @@ public class PorticoTextLayoutEngine {
 	private func isSoftWrapEnd(_ index: Int) -> Bool {
 		guard let textFrame else { return false }
 		let lines = CTFrameGetLines(textFrame) as! [CTLine]
+		let ns = attributedString.string as NSString
 		for line in lines.dropLast() {
 			let range = CTLineGetStringRange(line)
-			if range.location + range.length == index { return true }
+			let end = range.location + range.length
+			guard end == index else { continue }
+			// A line that ends in a line break is a HARD break: its end is the next line's start, not a wrap.
+			guard end > range.location, let last = UnicodeScalar(ns.character(at: end - 1)) else { return false }
+			return !CharacterSet.newlines.contains(last)
 		}
 		return false
 	}
@@ -598,7 +603,7 @@ public class PorticoTextLayoutEngine {
 			return length
 		case .paragraphStart:
 			let paragraph = ns.paragraphRange(for: NSRange(location: min(from, max(0, length - 1)), length: 0))
-			return from == length && hasTrailingLineBreak ? length : paragraph.location
+			return from == length && hasTrailingParagraphBreak ? length : paragraph.location
 		case .paragraphBackward:
 			let start = index(from: from, to: .paragraphStart)
 			return start < from || from == 0 ? start : index(from: from - 1, to: .paragraphStart)
@@ -1624,6 +1629,13 @@ public class PorticoTextLayoutEngine {
 	/// `measuredSize` (reserve one pitch of block extent) and `caretRect`
 	/// (synthesize the next line's head) must account for it — the classic
 	/// extra-line-fragment every text engine synthesizes.
+	/// A trailing PARAGRAPH break — LF, CR (so CRLF), U+2029 — the ones NSString (and NSTextView's ⌃A) treat as ending
+	/// a paragraph. Line separators (U+2028, U+000B, U+0085) end a line only (review 2026-11-22).
+	private var hasTrailingParagraphBreak: Bool {
+		guard let last = attributedString.string.unicodeScalars.last else { return false }
+		return last == "\n" || last == "\r" || last == "\u{2029}"
+	}
+
 	private var hasTrailingLineBreak: Bool {
 		// Any line-break character — LF, CR (so CRLF too), U+2028/9 — opens an empty last line (review 2026-11-22).
 		guard let last = attributedString.string.unicodeScalars.last else { return false }
@@ -1825,8 +1837,14 @@ public class PorticoTextLayoutEngine {
 	private func updateLayout() {
 		defer { if !relayingOutForBounds { onNeedsDisplay?() } } // repaint on content relayout (not bounds)
 		// Any relayout — new text, undo/redo, marked text, attributes, bounds, orientation — can move the wrap the
-		// upstream caret was pinned to; it was valid only for the layout it was set in (review 2026-11-22).
-		upstreamCaret = nil
+		// upstream caret was pinned to. It survives only if its index still ENDS a soft-wrapped line in the new
+		// layout (an ink change keeps it; an undo that restores a hard break there drops it) — review 2026-11-22.
+		defer {
+			if let upstream = upstreamCaret,
+			   upstream.length != attributedString.length || !isSoftWrapEnd(upstream.index) {
+				upstreamCaret = nil
+			}
+		}
 		strokeTextFrame = nil // stroke pass mirrors the layout; rebuilt lazily on next draw
 		guard bounds.width > 0 && bounds.height > 0 else {
 			self.frameSetter = nil

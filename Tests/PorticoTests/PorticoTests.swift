@@ -881,3 +881,51 @@ private func wrappingEngine(_ s: String, width: CGFloat = 60) -> PorticoTextLayo
 	#expect(drawn.minX >= 0 && drawn.maxX <= 24 && drawn.minY >= 0 && drawn.maxY <= 24)
 }
 #endif
+
+#if os(macOS)
+// MARK: - Review of the 0.7.6 fixes (2026-11-22)
+
+@Test @MainActor func anInkOnlyChangeKeepsTheLineEndCaret() throws {
+	let e = wrappingEngine("abcdefghijklmnopqrstuvwxyz")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 1, length: 0))
+	let firstLineY = e.caretRect(for: 1).midY
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	let wrap = e.cursorIndex
+	e.setDocumentAttributes([.foregroundColor: CGColor(red: 1, green: 0, blue: 0, alpha: 1)])
+	#expect(abs(e.caretRect(for: wrap).midY - firstLineY) < 0.5, "still drawn at the end of its own line")
+}
+
+@Test @MainActor func lineSeparatorsAreNotParagraphBreaksForControlA() {
+	for text in ["ab\u{2028}", "ab\u{000B}", "ab\u{0085}"] {
+		let e = engine(text)
+		let view = PorticoTextView(frame: .zero, layoutEngine: e)
+		e.setSelectedRange(NSRange(location: 3, length: 0))
+		view.doCommand(by: #selector(NSResponder.moveToBeginningOfParagraph(_:)))
+		#expect(e.cursorIndex == 0, "\(text.debugDescription)")
+	}
+	let e = engine("ab\u{2029}")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 3, length: 0))
+	view.doCommand(by: #selector(NSResponder.moveToBeginningOfParagraph(_:)))
+	#expect(e.cursorIndex == 3, "a paragraph separator does open an empty paragraph")
+}
+#endif
+
+#if os(macOS)
+@Test @MainActor func aRelayoutDropsALineEndCaretThatNowSitsAfterAHardBreak() throws {
+	// What an undo can restore: the same length, the same caret index, but a hard break now ends the line there.
+	let e = wrappingEngine("abcdefghij\nklmnopqrstuvwxyz")
+	e.upstreamCaret = (11, e.attributedString.length) // right after the break
+	e.update(bounds: CGSize(width: 61, height: 2000)) // any relayout
+	#expect(e.upstreamCaret == nil)
+	// …while a real soft-wrap end survives a relayout that keeps the wrap.
+	let w = wrappingEngine("abcdefghijklmnopqrstuvwxyz")
+	let view = PorticoTextView(frame: .zero, layoutEngine: w)
+	w.setSelectedRange(NSRange(location: 1, length: 0))
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	#expect(w.upstreamCaret != nil, "premise")
+	w.update(bounds: CGSize(width: 60.5, height: 2000))
+	#expect(w.upstreamCaret?.index == w.cursorIndex)
+}
+#endif
