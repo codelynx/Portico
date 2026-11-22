@@ -4,6 +4,12 @@ Notable changes to Portico. Pre-1.0, minor versions may include breaking changes
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-11-21
+### Fixed
+- **The caret is drawn inside the view.** At a line end the caret rect starts at the box's edge, so it was painted
+  outside the view; a host view that does not clip kept that mark on screen after the caret moved (a redraw covers only
+  the bounds). The drawn caret is now kept inside `bounds`; `caretRect(for:)` stays exact for input methods.
+
 ## [0.7.4] - 2026-11-21
 ### Fixed
 - **macOS: ⌘→ at a soft wrap stays on its line.** The end of a wrapped line and the start of the next are one index;

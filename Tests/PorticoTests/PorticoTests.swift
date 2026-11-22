@@ -787,3 +787,30 @@ private func wrappingEngine(_ s: String, width: CGFloat = 60) -> PorticoTextLayo
 	#expect(e.cursorIndex == 1)
 }
 #endif
+
+// MARK: - The drawn caret stays inside the view (stale caret beside 大阪, 2026-11-21)
+
+@Test func theDrawnCaretAtALineEndStaysInsideTheBounds() throws {
+	let e = PorticoTextLayoutEngine(attributedString: NSAttributedString(string: "東京\n大阪"), orientation: .horizontal,
+									bounds: CGSize(width: 2000, height: 2000))
+	let size = e.measuredSize()
+	e.update(bounds: size)
+	e.setSelectedRange(NSRange(location: 5, length: 0)) // after 阪
+	let honest = e.caretRect(for: 5)
+	let drawn = try #require(e.drawnCaretRect())
+	#expect(honest.maxX > size.width, "premise: the honest caret pokes past the edge")
+	#expect(drawn.minX >= 0 && drawn.maxX <= size.width && drawn.minY >= 0 && drawn.maxY <= size.height)
+	#expect(abs(drawn.midY - honest.midY) < 0.5, "same line")
+}
+
+@Test func theDrawnVerticalCaretStaysInsideTheBounds() throws {
+	let e = PorticoTextLayoutEngine(attributedString: NSAttributedString(string: "東京\n大阪"), orientation: .vertical,
+									bounds: CGSize(width: 2000, height: 2000))
+	let size = e.measuredSize()
+	e.update(bounds: size)
+	for index in 0...5 {
+		e.setSelectedRange(NSRange(location: index, length: 0))
+		let drawn = try #require(e.drawnCaretRect())
+		#expect(drawn.minX >= 0 && drawn.maxX <= size.width && drawn.minY >= 0 && drawn.maxY <= size.height, "index \(index)")
+	}
+}
