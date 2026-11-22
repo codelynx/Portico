@@ -3,6 +3,8 @@
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
+
+## [0.7.3] - 2026-11-21
 ### Fixed
 - **macOS: line, document, paragraph and word moves.** `PorticoTextView` handled only the plain arrows, so ⌘←/⌘→,
   ⌘↑/⌘↓, ⌥←/⌥→, ⌃A/⌃E and their Shift (extend) forms did nothing — a selection stayed, and the next keystroke
