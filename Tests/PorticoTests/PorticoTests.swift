@@ -814,3 +814,70 @@ private func wrappingEngine(_ s: String, width: CGFloat = 60) -> PorticoTextLayo
 		#expect(drawn.minX >= 0 && drawn.maxX <= size.width && drawn.minY >= 0 && drawn.maxY <= size.height, "index \(index)")
 	}
 }
+
+#if os(macOS)
+// MARK: - Review of 0.7.5 (2026-11-22)
+
+@Test @MainActor func aRelayoutDropsTheUpstreamCaret() throws {
+	let e = wrappingEngine("abcdefghijklmnopqrstuvwxyz")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 1, length: 0))
+	let firstLineY = e.caretRect(for: 1).midY
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	let wrap = e.cursorIndex
+	#expect(abs(e.caretRect(for: wrap).midY - firstLineY) < 0.5, "premise: upstream")
+	e.update(orientation: .vertical)
+	e.update(orientation: .horizontal) // same text, same index, same length — but a new layout
+	#expect(e.cursorIndex == wrap)
+	#expect(e.caretRect(for: wrap).midY < firstLineY - 1, "the index belongs to the next line again")
+}
+
+@Test @MainActor func repeatedShiftOptionDownKeepsExtendingByParagraph() {
+	let e = engine("aa\nbb\ncc")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 0, length: 0))
+	var seen: [NSRange?] = []
+	for _ in 0..<3 {
+		view.doCommand(by: #selector(NSResponder.moveParagraphForwardAndModifySelection(_:)))
+		seen.append(e.selectionRange)
+	}
+	#expect(seen == [NSRange(location: 0, length: 2), NSRange(location: 0, length: 5), NSRange(location: 0, length: 8)])
+	e.setSelectedRange(NSRange(location: 8, length: 0))
+	seen = []
+	for _ in 0..<3 {
+		view.doCommand(by: #selector(NSResponder.moveParagraphBackwardAndModifySelection(_:)))
+		seen.append(e.selectionRange)
+	}
+	#expect(seen == [NSRange(location: 6, length: 2), NSRange(location: 3, length: 5), NSRange(location: 0, length: 8)])
+}
+
+@Test @MainActor func everyTrailingLineBreakOpensAnEmptyLastLine() {
+	for text in ["ab\r\n", "ab\r", "ab\u{2028}", "ab\u{2029}"] {
+		let e = engine(text)
+		let view = PorticoTextView(frame: .zero, layoutEngine: e)
+		let end = (text as NSString).length
+		e.setSelectedRange(NSRange(location: end, length: 0))
+		view.doCommand(by: #selector(NSResponder.moveToLeftEndOfLine(_:)))
+		#expect(e.cursorIndex == end, "line start, \(text.debugDescription)")
+		view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+		#expect(e.cursorIndex == end, "line end, \(text.debugDescription)")
+	}
+}
+
+@Test @MainActor func aTateChuYokoGroupInsideAWordKeepsTheWordsStops() {
+	let e = engine("abc12def next", orientation: .vertical)
+	e.setSelectedRange(NSRange(location: 5, length: 0)) // just after "12"
+	e.moveCursor(to: .wordForward)
+	#expect(e.cursorIndex == 8, "the end of def, not of next")
+}
+
+@Test func anOversizedCaretIsShrunkIntoTheBounds() throws {
+	let e = PorticoTextLayoutEngine(attributedString: NSAttributedString(string: ""), orientation: .horizontal,
+									bounds: CGSize(width: 24, height: 24))
+	e.setDocumentAttributes([.font: CTFontCreateWithName("Hiragino Mincho ProN" as CFString, 144, nil)])
+	e.setSelectedRange(NSRange(location: 0, length: 0))
+	#expect(e.caretRect(for: 0).height > 24, "premise: the honest caret is taller than the box")
+	let drawn = try #require(e.drawnCaretRect())
+	#expect(drawn.minX >= 0 && drawn.maxX <= 24 && drawn.minY >= 0 && drawn.maxY <= 24)
+}
+#endif

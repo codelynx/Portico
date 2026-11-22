@@ -3,6 +3,15 @@
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
+### Fixed
+- **The upstream (line-end) caret is dropped on any relayout** — undo/redo, marked text, attributes, bounds,
+  orientation — so it can no longer draw on the wrong line after the layout changes underneath it.
+- **Repeated ⇧⌥↑/⇧⌥↓ keeps extending paragraph by paragraph** (new `MoveUnit.paragraphBackward`/`paragraphForward`);
+  ⌃A/⌃E still stay at the current paragraph's ends.
+- **Every trailing line-break character** (CRLF, CR, U+2028/9 — not only LF) opens an empty last line for the caret and
+  for ⌘←/⌘→.
+- **A 縦中横 group inside a word** (`abc12def`) splits it into word stops instead of erasing the word's own stops.
+- **The drawn caret is shrunk, not only moved, into a box smaller than it.**
 
 ## [0.7.5] - 2026-11-21
 ### Fixed
