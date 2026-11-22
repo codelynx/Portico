@@ -3,6 +3,10 @@
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
+### Fixed
+- **The caret is drawn inside the view.** At a line end the caret rect starts at the box's edge, so it was painted
+  outside the view; a host view that does not clip kept that mark on screen after the caret moved (a redraw covers only
+  the bounds). The drawn caret is now kept inside `bounds`; `caretRect(for:)` stays exact for input methods.
 
 ## [0.7.4] - 2026-11-21
 ### Fixed
