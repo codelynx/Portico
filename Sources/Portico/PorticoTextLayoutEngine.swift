@@ -343,6 +343,7 @@ public class PorticoTextLayoutEngine {
 	}
 	
 	public func beginSelection(at index: Int) {
+		upstreamCaret = nil
 		typingRunOpen = false // a caret/selection change ends a coalesced typing run
 		cursorIndex = index
 		selectionAnchorIndex = index
@@ -350,6 +351,7 @@ public class PorticoTextLayoutEngine {
 	}
 
 	public func updateSelection(to index: Int) {
+		upstreamCaret = nil
 		typingRunOpen = false
 		cursorIndex = index
 		if let anchor = selectionAnchorIndex {
@@ -368,6 +370,7 @@ public class PorticoTextLayoutEngine {
 	/// the right end instead of a nil/stale anchor. A zero-length range collapses to a
 	/// caret; otherwise the anchor is the range start and the cursor its end.
 	public func setSelectedRange(_ range: NSRange) {
+		upstreamCaret = nil
 		typingRunOpen = false
 		if range.length == 0 {
 			cursorIndex = range.location
@@ -544,13 +547,40 @@ public class PorticoTextLayoutEngine {
 		/// The start / end of the hard paragraph (between line breaks).
 		case paragraphStart, paragraphEnd
 		case documentStart, documentEnd
-		/// The start of the previous word / the end of the next word (system word segmentation).
+		/// The start of the previous word / the end of the next word (system word segmentation; a 縦中横 group is one word).
 		case wordBackward, wordForward
+		/// One character back / forward in reading order, whatever the orientation (`moveBackward:` / `moveForward:`).
+		case characterBackward, characterForward
+	}
+
+	/// The caret at a SOFT-WRAP boundary belongs to the line it ENDS (macOS "upstream" affinity), not the line the
+	/// same index starts — set only by a line-end move, so ⌘→ shows the caret at the end of its own line and a ⌘←
+	/// right after stays on that line. It holds while the caret and the text are unchanged (index and length match).
+	private var upstreamCaret: (index: Int, length: Int)?
+
+	private var caretIsUpstream: Bool {
+		guard let upstreamCaret, selectionRange == nil else { return false }
+		return upstreamCaret.index == cursorIndex && upstreamCaret.length == attributedString.length
 	}
 
 	/// Move the caret by `unit` (and extend the selection when `modifySelection`).
 	public func moveCursor(to unit: MoveUnit, modifySelection: Bool = false) {
-		moveCursor(toIndex: index(from: cursorIndex, to: unit), modifySelection: modifySelection)
+		let target = index(from: cursorIndex, to: unit)
+		moveCursor(toIndex: target, modifySelection: modifySelection)
+		if unit == .lineEnd, !modifySelection, isSoftWrapEnd(target) {
+			upstreamCaret = (target, attributedString.length)
+		}
+	}
+
+	/// True when `index` ends a laid-out line that wraps onto another (no line break) — where upstream matters.
+	private func isSoftWrapEnd(_ index: Int) -> Bool {
+		guard let textFrame else { return false }
+		let lines = CTFrameGetLines(textFrame) as! [CTLine]
+		for line in lines.dropLast() {
+			let range = CTLineGetStringRange(line)
+			if range.location + range.length == index { return true }
+		}
+		return false
 	}
 
 	/// The string index `unit` reaches from `from`. **Pure**, like `index(from:moving:)`.
@@ -573,47 +603,61 @@ public class PorticoTextLayoutEngine {
 			ns.getParagraphStart(nil, end: &end, contentsEnd: &contentsEnd, for: NSRange(location: from, length: 0))
 			return contentsEnd
 		case .lineStart, .lineEnd:
-			guard let line = lineRange(containing: from) else {
+			// The empty line after a trailing break has no laid-out line of its own: both of its ends are the end.
+			if from == length, hasTrailingLineBreak { return length }
+			let upstream = from == cursorIndex && caretIsUpstream
+			guard let line = lineRange(containing: from, upstream: upstream) else {
 				return index(from: from, to: unit == .lineStart ? .paragraphStart : .paragraphEnd)
 			}
 			if unit == .lineStart { return line.location }
-			let end = line.location + line.length
-			// A line that ends in a hard break: the end is BEFORE the break, or the caret would land on the next line.
-			return end > line.location && ns.character(at: end - 1) == 0x0A ? end - 1 : end
+			// A line that ends in a hard break (LF, CRLF, CR, U+2028/9): the end is BEFORE the break — never between
+			// CR and LF — or the caret would land on the next line.
+			var end = line.location + line.length
+			while end > line.location, let scalar = UnicodeScalar(ns.character(at: end - 1)),
+				  CharacterSet.newlines.contains(scalar) {
+				end -= 1
+			}
+			return end
 		case .wordBackward:
-			var target = 0
-			ns.enumerateSubstrings(in: NSRange(location: 0, length: from), options: [.byWords, .substringNotRequired]) { _, word, _, _ in
-				target = word.location
-			}
-			return target
+			return wordBoundaries(in: ns).starts.last(where: { $0 < from }) ?? 0
 		case .wordForward:
-			guard from < length else { return length }
-			var target = length
-			ns.enumerateSubstrings(in: NSRange(location: from, length: length - from),
-								   options: [.byWords, .substringNotRequired]) { _, word, _, stop in
-				target = word.location + word.length
-				stop.pointee = true
-			}
-			return target
+			return wordBoundaries(in: ns).ends.first(where: { $0 > from }) ?? length
+		case .characterBackward:
+			return from == 0 ? 0 : (ns.rangeOfComposedCharacterSequence(at: from - 1)).location
+		case .characterForward:
+			return from >= length ? length : NSMaxRange(ns.rangeOfComposedCharacterSequence(at: from))
 		}
 	}
 
 	/// The string range of the laid-out line (column) holding `index`; nil before the first layout. At a soft-wrap
 	/// boundary the index belongs to the line it STARTS; the end of the text belongs to the last line.
-	private func lineRange(containing index: Int) -> NSRange? {
+	private func lineRange(containing index: Int, upstream: Bool = false) -> NSRange? {
 		guard let textFrame else { return nil }
 		let lines = CTFrameGetLines(textFrame) as! [CTLine]
 		guard !lines.isEmpty else { return nil }
 		for line in lines {
 			let range = CTLineGetStringRange(line)
-			if index < range.location + range.length { return NSRange(location: range.location, length: range.length) }
+			if index < range.location + range.length || (upstream && index == range.location + range.length) {
+				return NSRange(location: range.location, length: range.length)
+			}
 		}
 		let last = CTLineGetStringRange(lines[lines.count - 1])
 		return NSRange(location: last.location, length: last.length)
 	}
 
+	/// Word starts and ends in order: system word segmentation, with each 縦中横 group (e.g. "!?") as one word, the
+	/// same rule `wordRange(at:)` uses for a double-click.
+	private func wordBoundaries(in ns: NSString) -> (starts: [Int], ends: [Int]) {
+		var ranges = currentTateChuYokoGroups()
+		ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byWords, .substringNotRequired]) { _, word, _, _ in
+			if !ranges.contains(where: { NSIntersectionRange($0, word).length > 0 }) { ranges.append(word) }
+		}
+		return (ranges.map(\.location).sorted(), ranges.map { $0.location + $0.length }.sorted())
+	}
+
 	private func moveCursor(toIndex target: Int, modifySelection: Bool) {
 		typingRunOpen = false // moving the caret ends a coalesced typing run
+		upstreamCaret = nil
 
 		if modifySelection {
 			if selectionRange == nil {
@@ -1161,7 +1205,9 @@ public class PorticoTextLayoutEngine {
 			// Check if index is within this line. 
 			// If it's the absolute end of the string, it belongs to the last line.
 			let isLastLine = i == lines.count - 1
-			if (index >= range.location && index < range.location + range.length) || (isLastLine && index == range.location + range.length) {
+			let atUpstreamEnd = index == range.location + range.length && index == cursorIndex && caretIsUpstream
+			if (index >= range.location && index < range.location + range.length) || (isLastLine && index == range.location + range.length)
+				|| atUpstreamEnd {
 				let origin = origins[i]
 				
 				var ascent: CGFloat = 0
