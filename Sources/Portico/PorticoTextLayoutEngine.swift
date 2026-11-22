@@ -2233,10 +2233,22 @@ public class PorticoTextLayoutEngine {
 
 	/// The caret, when the engine owns it (see `drawsCaret`). Drawn over the text.
 	private func drawCaret(in context: CGContext) {
-		guard drawsCaret && selectionRange == nil && markedRange == nil else { return }
-		let rect = caretRect(for: cursorIndex)
+		guard let rect = drawnCaretRect() else { return }
 		context.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
 		context.fill(rect)
+	}
+
+	/// The caret as DRAWN: `caretRect(for:)` kept inside `bounds`. At a line end the honest rect starts AT the
+	/// box's edge, so it was painted outside the view — which a host view that doesn't clip leaves on screen after
+	/// the caret moves, because a redraw covers only the bounds (MangaLoft TestFlight walk, 2026-11-21: a second
+	/// caret stayed beside 大阪 after ⌘↑). `caretRect(for:)` itself stays honest for input methods.
+	func drawnCaretRect() -> CGRect? {
+		guard drawsCaret && selectionRange == nil && markedRange == nil else { return nil }
+		var rect = caretRect(for: cursorIndex)
+		guard bounds.width > 0, bounds.height > 0 else { return rect }
+		rect.origin.x = min(max(rect.minX, 0), max(0, bounds.width - rect.width))
+		rect.origin.y = min(max(rect.minY, 0), max(0, bounds.height - rect.height))
+		return rect
 	}
 
 	/// Editing render: selection highlight under the text, caret over it.
