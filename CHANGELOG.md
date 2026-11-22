@@ -3,6 +3,8 @@
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
+
+## [0.7.4] - 2026-11-21
 ### Fixed
 - **macOS: ⌘→ at a soft wrap stays on its line.** The end of a wrapped line and the start of the next are one index;
   a line-end move now keeps the caret on the line it ends (upstream affinity), so it is drawn there and a ⌘← right
