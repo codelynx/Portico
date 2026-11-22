@@ -814,3 +814,186 @@ private func wrappingEngine(_ s: String, width: CGFloat = 60) -> PorticoTextLayo
 		#expect(drawn.minX >= 0 && drawn.maxX <= size.width && drawn.minY >= 0 && drawn.maxY <= size.height, "index \(index)")
 	}
 }
+
+#if os(macOS)
+// MARK: - Review of 0.7.5 (2026-11-22)
+
+@Test @MainActor func aRelayoutDropsTheUpstreamCaret() throws {
+	let e = wrappingEngine("abcdefghijklmnopqrstuvwxyz")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 1, length: 0))
+	let firstLineY = e.caretRect(for: 1).midY
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	let wrap = e.cursorIndex
+	#expect(abs(e.caretRect(for: wrap).midY - firstLineY) < 0.5, "premise: upstream")
+	e.update(orientation: .vertical)
+	e.update(orientation: .horizontal) // same text, same index, same length — but a new layout
+	#expect(e.cursorIndex == wrap)
+	#expect(e.caretRect(for: wrap).midY < firstLineY - 1, "the index belongs to the next line again")
+}
+
+@Test @MainActor func repeatedShiftOptionDownKeepsExtendingByParagraph() {
+	let e = engine("aa\nbb\ncc")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 0, length: 0))
+	var seen: [NSRange?] = []
+	for _ in 0..<3 {
+		view.doCommand(by: #selector(NSResponder.moveParagraphForwardAndModifySelection(_:)))
+		seen.append(e.selectionRange)
+	}
+	#expect(seen == [NSRange(location: 0, length: 2), NSRange(location: 0, length: 5), NSRange(location: 0, length: 8)])
+	e.setSelectedRange(NSRange(location: 8, length: 0))
+	seen = []
+	for _ in 0..<3 {
+		view.doCommand(by: #selector(NSResponder.moveParagraphBackwardAndModifySelection(_:)))
+		seen.append(e.selectionRange)
+	}
+	#expect(seen == [NSRange(location: 6, length: 2), NSRange(location: 3, length: 5), NSRange(location: 0, length: 8)])
+}
+
+@Test @MainActor func everyTrailingLineBreakOpensAnEmptyLastLine() {
+	for text in ["ab\r\n", "ab\r", "ab\u{2028}", "ab\u{2029}"] {
+		let e = engine(text)
+		let view = PorticoTextView(frame: .zero, layoutEngine: e)
+		let end = (text as NSString).length
+		e.setSelectedRange(NSRange(location: end, length: 0))
+		view.doCommand(by: #selector(NSResponder.moveToLeftEndOfLine(_:)))
+		#expect(e.cursorIndex == end, "line start, \(text.debugDescription)")
+		view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+		#expect(e.cursorIndex == end, "line end, \(text.debugDescription)")
+	}
+}
+
+@Test @MainActor func aTateChuYokoGroupInsideAWordKeepsTheWordsStops() {
+	let e = engine("abc12def next", orientation: .vertical)
+	e.setSelectedRange(NSRange(location: 5, length: 0)) // just after "12"
+	e.moveCursor(to: .wordForward)
+	#expect(e.cursorIndex == 8, "the end of def, not of next")
+}
+
+@Test func anOversizedCaretIsShrunkIntoTheBounds() throws {
+	let e = PorticoTextLayoutEngine(attributedString: NSAttributedString(string: ""), orientation: .horizontal,
+									bounds: CGSize(width: 24, height: 24))
+	e.setDocumentAttributes([.font: CTFontCreateWithName("Hiragino Mincho ProN" as CFString, 144, nil)])
+	e.setSelectedRange(NSRange(location: 0, length: 0))
+	#expect(e.caretRect(for: 0).height > 24, "premise: the honest caret is taller than the box")
+	let drawn = try #require(e.drawnCaretRect())
+	#expect(drawn.minX >= 0 && drawn.maxX <= 24 && drawn.minY >= 0 && drawn.maxY <= 24)
+}
+#endif
+
+#if os(macOS)
+// MARK: - Review of the 0.7.6 fixes (2026-11-22)
+
+@Test @MainActor func anInkOnlyChangeKeepsTheLineEndCaret() throws {
+	let e = wrappingEngine("abcdefghijklmnopqrstuvwxyz")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 1, length: 0))
+	let firstLineY = e.caretRect(for: 1).midY
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	let wrap = e.cursorIndex
+	e.setDocumentAttributes([.foregroundColor: CGColor(red: 1, green: 0, blue: 0, alpha: 1)])
+	#expect(abs(e.caretRect(for: wrap).midY - firstLineY) < 0.5, "still drawn at the end of its own line")
+}
+
+@Test @MainActor func lineSeparatorsAreNotParagraphBreaksForControlA() {
+	for text in ["ab\u{2028}", "ab\u{000B}", "ab\u{0085}"] {
+		let e = engine(text)
+		let view = PorticoTextView(frame: .zero, layoutEngine: e)
+		e.setSelectedRange(NSRange(location: 3, length: 0))
+		view.doCommand(by: #selector(NSResponder.moveToBeginningOfParagraph(_:)))
+		#expect(e.cursorIndex == 0, "\(text.debugDescription)")
+	}
+	let e = engine("ab\u{2029}")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 3, length: 0))
+	view.doCommand(by: #selector(NSResponder.moveToBeginningOfParagraph(_:)))
+	#expect(e.cursorIndex == 3, "a paragraph separator does open an empty paragraph")
+}
+#endif
+
+#if os(macOS)
+@Test @MainActor func aRelayoutDropsALineEndCaretThatNowSitsAfterAHardBreak() throws {
+	// What an undo can restore: the same length, the same caret index, but a hard break now ends the line there.
+	let e = wrappingEngine("abcdefghij\nklmnopqrstuvwxyz")
+	e.upstreamCaret = (11, e.attributedString.length) // right after the break
+	e.update(bounds: CGSize(width: 61, height: 2000)) // any relayout
+	#expect(e.upstreamCaret == nil)
+	// …while a real soft-wrap end survives a relayout that keeps the wrap.
+	let w = wrappingEngine("abcdefghijklmnopqrstuvwxyz")
+	let view = PorticoTextView(frame: .zero, layoutEngine: w)
+	w.setSelectedRange(NSRange(location: 1, length: 0))
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	#expect(w.upstreamCaret != nil, "premise")
+	w.update(bounds: CGSize(width: 60.5, height: 2000))
+	#expect(w.upstreamCaret?.index == w.cursorIndex)
+}
+#endif
+
+#if os(macOS)
+// MARK: - Third review (2026-11-22)
+
+@Test @MainActor func lineEndAtAWrapEndingInAnEmojiStaysOnItsLine() throws {
+	for orientation in [PorticoLayoutOrientation.horizontal, .vertical] {
+		let e = PorticoTextLayoutEngine(attributedString: NSAttributedString(string: "abc😀defghijklmnopqrstuvwxyz😀abcdefghij"),
+										orientation: orientation,
+										bounds: orientation == .horizontal ? CGSize(width: 60, height: 2000) : CGSize(width: 2000, height: 60))
+		let view = PorticoTextView(frame: .zero, layoutEngine: e)
+		e.setSelectedRange(NSRange(location: 0, length: 0))
+		// Line end: ⌘→ across a horizontal line, ⌘↓ down a vertical column (spatial, like the plain arrows).
+		view.doCommand(by: orientation == .horizontal
+			? #selector(NSResponder.moveToRightEndOfLine(_:)) : #selector(NSResponder.moveToEndOfDocument(_:)))
+		let end = e.cursorIndex
+		#expect(end == 5, "after abc😀")
+		#expect(e.upstreamCaret?.index == end, "\(orientation): a soft wrap, even after an emoji")
+		let first = e.caretRect(for: 0)
+		let drawn = e.caretRect(for: end)
+		if orientation == .horizontal {
+			#expect(abs(drawn.midY - first.midY) < 0.5, "same line")
+		} else {
+			#expect(abs(drawn.midX - first.midX) < 0.5, "same column")
+		}
+	}
+}
+
+@Test @MainActor func undoNeverInheritsTheLineEndCaret() throws {
+	let e = wrappingEngine("first word second word third word")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 6, length: 1)) // "w"
+	e.insertText("W") // same length, same wrap
+	e.setSelectedRange(NSRange(location: 0, length: 0))
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	#expect(e.upstreamCaret != nil, "premise")
+	e.undoManager.undo()
+	#expect(e.upstreamCaret == nil)
+}
+
+@Test @MainActor func markedTextDropsTheLineEndCaret() throws {
+	let e = wrappingEngine("abcdefghijklmnopqrstuvwxyz")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 1, length: 0))
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	#expect(e.upstreamCaret != nil, "premise")
+	// Same length: the composition REPLACES one character before the wrap, so length and wrap are unchanged.
+	e.setMarkedText("k", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: 0, length: 1))
+	#expect(e.attributedString.length == 26, "premise: same length")
+	#expect(e.upstreamCaret == nil)
+}
+#endif
+
+#if os(macOS)
+@Test @MainActor func aReplacedDocumentNeverInheritsTheLineEndCaret() throws {
+	let e = wrappingEngine("first word second word third")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 0, length: 0))
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	#expect(e.upstreamCaret != nil, "premise")
+	e.update(attributedString: NSAttributedString(string: "first Word second word third")) // same length, same wrap
+	#expect(e.upstreamCaret == nil)
+	// An identical update is a no-op and keeps it.
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	let pinned = try #require(e.upstreamCaret)
+	e.update(attributedString: NSAttributedString(string: "first Word second word third"))
+	#expect(e.upstreamCaret?.index == pinned.index)
+}
+#endif

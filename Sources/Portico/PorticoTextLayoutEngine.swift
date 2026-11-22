@@ -197,6 +197,7 @@ public class PorticoTextLayoutEngine {
 	/// clear the stack). Not `update(attributedString:)` — that's the document-reset path.
 	private func restore(_ snapshot: EditSnapshot) {
 		typingRunOpen = false
+		upstreamCaret = nil // an undo/redo restores a caret, never the outgoing state's line-end pin (review 2026-11-22)
 		preCompositionSnapshot = nil
 		// A snapshot taken before `setDocumentAttributes` carries the old look; the document's
 		// attributes are not part of the history, so they are laid back over it.
@@ -247,6 +248,7 @@ public class PorticoTextLayoutEngine {
 		// A change in content is a document reset. Identical content is a no-op: keep undo history
 		// (a direct-engine client calling this idempotently mustn't lose its stack) and skip relayout.
 		guard !self.attributedString.isEqual(attributedString) else { return }
+		upstreamCaret = nil // a new document never inherits the old one's line-end pin, even at the same length and wrap
 		// Document reset: clear only *our* registered actions (never the whole manager — a
 		// host-injected one owns the app's history too), and end any typing run.
 		undoManager.removeAllActions(withTarget: self)
@@ -413,6 +415,7 @@ public class PorticoTextLayoutEngine {
 
 	public func setMarkedText(_ text: String, selectedRange: NSRange, replacementRange: NSRange?) {
 		typingRunOpen = false // IME composition boundary breaks a typing run; no undo step while marked
+		upstreamCaret = nil // composition moves the caret; a same-length replacement must not keep the old pin
 		if markedRange == nil { preCompositionSnapshot = currentSnapshot() } // composition start
 		let mutableString = NSMutableAttributedString(attributedString: attributedString)
 
@@ -544,8 +547,11 @@ public class PorticoTextLayoutEngine {
 	public enum MoveUnit {
 		/// The start / end of the laid-out line the caret is on (a column, in vertical text).
 		case lineStart, lineEnd
-		/// The start / end of the hard paragraph (between line breaks).
+		/// The start / end of the hard paragraph (between line breaks). Repeating stays put (⌃A/⌃E).
 		case paragraphStart, paragraphEnd
+		/// Like `paragraphStart` / `paragraphEnd`, but from a paragraph boundary it goes on to the previous / next
+		/// paragraph, so repeating ⇧⌥↑/⇧⌥↓ keeps extending (as NSTextView does).
+		case paragraphBackward, paragraphForward
 		case documentStart, documentEnd
 		/// The start of the previous word / the end of the next word (system word segmentation; a 縦中横 group is one word).
 		case wordBackward, wordForward
@@ -556,7 +562,7 @@ public class PorticoTextLayoutEngine {
 	/// The caret at a SOFT-WRAP boundary belongs to the line it ENDS (macOS "upstream" affinity), not the line the
 	/// same index starts — set only by a line-end move, so ⌘→ shows the caret at the end of its own line and a ⌘←
 	/// right after stays on that line. It holds while the caret and the text are unchanged (index and length match).
-	private var upstreamCaret: (index: Int, length: Int)?
+	var upstreamCaret: (index: Int, length: Int)? // internal: tests set it to exercise the relayout rule
 
 	private var caretIsUpstream: Bool {
 		guard let upstreamCaret, selectionRange == nil else { return false }
@@ -576,9 +582,16 @@ public class PorticoTextLayoutEngine {
 	private func isSoftWrapEnd(_ index: Int) -> Bool {
 		guard let textFrame else { return false }
 		let lines = CTFrameGetLines(textFrame) as! [CTLine]
+		let ns = attributedString.string as NSString
 		for line in lines.dropLast() {
 			let range = CTLineGetStringRange(line)
-			if range.location + range.length == index { return true }
+			let end = range.location + range.length
+			guard end == index else { continue }
+			// A line that ends in a line break is a HARD break: its end is the next line's start, not a wrap. Read the
+			// whole last CHARACTER — an emoji's last UTF-16 unit is half a surrogate pair (review 2026-11-22).
+			guard end > range.location else { return false }
+			let last = ns.substring(with: ns.rangeOfComposedCharacterSequence(at: end - 1))
+			return !last.unicodeScalars.contains(where: CharacterSet.newlines.contains)
 		}
 		return false
 	}
@@ -595,7 +608,17 @@ public class PorticoTextLayoutEngine {
 			return length
 		case .paragraphStart:
 			let paragraph = ns.paragraphRange(for: NSRange(location: min(from, max(0, length - 1)), length: 0))
-			return from == length && length > 0 && ns.character(at: length - 1) == 0x0A ? length : paragraph.location
+			return from == length && hasTrailingParagraphBreak ? length : paragraph.location
+		case .paragraphBackward:
+			let start = index(from: from, to: .paragraphStart)
+			return start < from || from == 0 ? start : index(from: from - 1, to: .paragraphStart)
+		case .paragraphForward:
+			let end = index(from: from, to: .paragraphEnd)
+			guard end == from, from < length else { return end }
+			// At a paragraph's end: step over its break, then to the next paragraph's end.
+			var next = 0
+			ns.getParagraphStart(nil, end: &next, contentsEnd: nil, for: NSRange(location: from, length: 0))
+			return next >= length ? length : index(from: next, to: .paragraphEnd)
 		case .paragraphEnd:
 			guard from < length else { return length }
 			var end = 0
@@ -648,9 +671,18 @@ public class PorticoTextLayoutEngine {
 	/// Word starts and ends in order: system word segmentation, with each 縦中横 group (e.g. "!?") as one word, the
 	/// same rule `wordRange(at:)` uses for a double-click.
 	private func wordBoundaries(in ns: NSString) -> (starts: [Int], ends: [Int]) {
-		var ranges = currentTateChuYokoGroups()
+		let groups = currentTateChuYokoGroups()
+		var ranges = groups
 		ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byWords, .substringNotRequired]) { _, word, _, _ in
-			if !ranges.contains(where: { NSIntersectionRange($0, word).length > 0 }) { ranges.append(word) }
+			// A group inside a word (`abc12def`) splits it: the parts outside the group stay words of their own,
+			// rather than the whole word being dropped (review 2026-11-22).
+			var start = word.location
+			for group in groups.sorted(by: { $0.location < $1.location }) where NSIntersectionRange(group, word).length > 0 {
+				if group.location > start { ranges.append(NSRange(location: start, length: group.location - start)) }
+				start = max(start, group.location + group.length)
+			}
+			let end = word.location + word.length
+			if end > start { ranges.append(NSRange(location: start, length: end - start)) }
 		}
 		return (ranges.map(\.location).sorted(), ranges.map { $0.location + $0.length }.sorted())
 	}
@@ -1602,8 +1634,17 @@ public class PorticoTextLayoutEngine {
 	/// `measuredSize` (reserve one pitch of block extent) and `caretRect`
 	/// (synthesize the next line's head) must account for it — the classic
 	/// extra-line-fragment every text engine synthesizes.
+	/// A trailing PARAGRAPH break — LF, CR (so CRLF), U+2029 — the ones NSString (and NSTextView's ⌃A) treat as ending
+	/// a paragraph. Line separators (U+2028, U+000B, U+0085) end a line only (review 2026-11-22).
+	private var hasTrailingParagraphBreak: Bool {
+		guard let last = attributedString.string.unicodeScalars.last else { return false }
+		return last == "\n" || last == "\r" || last == "\u{2029}"
+	}
+
 	private var hasTrailingLineBreak: Bool {
-		attributedString.string.hasSuffix("\n")
+		// Any line-break character — LF, CR (so CRLF too), U+2028/9 — opens an empty last line (review 2026-11-22).
+		guard let last = attributedString.string.unicodeScalars.last else { return false }
+		return CharacterSet.newlines.contains(last)
 	}
 
 	/// Whole-text outline; nil = off (default). Setting a different value (including
@@ -1800,6 +1841,15 @@ public class PorticoTextLayoutEngine {
 
 	private func updateLayout() {
 		defer { if !relayingOutForBounds { onNeedsDisplay?() } } // repaint on content relayout (not bounds)
+		// Any relayout — new text, undo/redo, marked text, attributes, bounds, orientation — can move the wrap the
+		// upstream caret was pinned to. It survives only if its index still ENDS a soft-wrapped line in the new
+		// layout (an ink change keeps it; an undo that restores a hard break there drops it) — review 2026-11-22.
+		defer {
+			if let upstream = upstreamCaret,
+			   upstream.length != attributedString.length || !isSoftWrapEnd(upstream.index) {
+				upstreamCaret = nil
+			}
+		}
 		strokeTextFrame = nil // stroke pass mirrors the layout; rebuilt lazily on next draw
 		guard bounds.width > 0 && bounds.height > 0 else {
 			self.frameSetter = nil
@@ -2246,8 +2296,11 @@ public class PorticoTextLayoutEngine {
 		guard drawsCaret && selectionRange == nil && markedRange == nil else { return nil }
 		var rect = caretRect(for: cursorIndex)
 		guard bounds.width > 0, bounds.height > 0 else { return rect }
-		rect.origin.x = min(max(rect.minX, 0), max(0, bounds.width - rect.width))
-		rect.origin.y = min(max(rect.minY, 0), max(0, bounds.height - rect.height))
+		// Size first (a caret taller than a tiny box would still overflow it — review 2026-11-22), then position.
+		rect.size.width = min(rect.width, bounds.width)
+		rect.size.height = min(rect.height, bounds.height)
+		rect.origin.x = min(max(rect.minX, 0), bounds.width - rect.width)
+		rect.origin.y = min(max(rect.minY, 0), bounds.height - rect.height)
 		return rect
 	}
 
