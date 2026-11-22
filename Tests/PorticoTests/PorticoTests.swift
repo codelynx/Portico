@@ -616,3 +616,83 @@ private final class InputDelegateSpy: NSObject, UITextInputDelegate {
 	#expect(anchor != nil)
 	#expect(anchor!.width < unionWidth) // one column wide — first segment, not the multi-column union
 }
+
+#if os(macOS)
+// MARK: - Larger-unit navigation (⌘/⌥ arrows)
+// TestFlight feedback on MangaLoft 1.0.0 (30): ⌘← did nothing while editing, so a selection stayed and the next
+// keystroke replaced it. Every one of these commands used to be dropped by `doCommand(by:)`.
+
+@Test @MainActor func commandArrowsGoToTheLineEndsInHorizontalText() {
+	let e = engine("abc\ndef\nghi")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 5, length: 0)) // inside "def"
+	view.doCommand(by: #selector(NSResponder.moveToLeftEndOfLine(_:)))
+	#expect(e.cursorIndex == 4 && e.selectionRange == nil)
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:)))
+	#expect(e.cursorIndex == 7, "before the line break, not on the next line")
+	view.doCommand(by: #selector(NSResponder.moveToBeginningOfDocument(_:)))
+	#expect(e.cursorIndex == 0)
+	view.doCommand(by: #selector(NSResponder.moveToEndOfDocument(_:)))
+	#expect(e.cursorIndex == 11)
+}
+
+@Test @MainActor func commandLeftCollapsesASelectionSoTypingDoesNotReplaceIt() {
+	let e = engine("abc def")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 4, length: 3)) // "def" selected
+	view.doCommand(by: #selector(NSResponder.moveToLeftEndOfLine(_:)))
+	#expect(e.selectionRange == nil && e.cursorIndex == 0)
+	e.insertText("X")
+	#expect(e.attributedString.string == "Xabc def")
+}
+
+@Test @MainActor func shiftCommandArrowExtendsTheSelection() {
+	let e = engine("abc def")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 4, length: 0))
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLineAndModifySelection(_:)))
+	#expect(e.selectionRange == NSRange(location: 4, length: 3))
+	view.doCommand(by: #selector(NSResponder.moveToLeftEndOfLineAndModifySelection(_:)))
+	#expect(e.selectionRange == NSRange(location: 0, length: 4))
+}
+
+@Test @MainActor func optionArrowsMoveByWords() {
+	let e = engine("one two three")
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 5, length: 0)) // inside "two"
+	view.doCommand(by: #selector(NSResponder.moveWordRight(_:)))
+	#expect(e.cursorIndex == 7)
+	view.doCommand(by: #selector(NSResponder.moveWordLeft(_:)))
+	#expect(e.cursorIndex == 4)
+	view.doCommand(by: #selector(NSResponder.moveWordLeft(_:)))
+	#expect(e.cursorIndex == 0)
+}
+
+// Vertical text is spatial, like its plain arrows: ↑/↓ run along a column, ←/→ cross columns (right to left).
+@Test @MainActor func commandArrowsAreSpatialInVerticalText() {
+	let e = engine("一二三\n四五六", orientation: .vertical)
+	let view = PorticoTextView(frame: .zero, layoutEngine: e)
+	e.setSelectedRange(NSRange(location: 5, length: 0)) // in the second column
+	view.doCommand(by: #selector(NSResponder.moveToBeginningOfDocument(_:))) // ⌘↑: top of this column
+	#expect(e.cursorIndex == 4)
+	view.doCommand(by: #selector(NSResponder.moveToEndOfDocument(_:))) // ⌘↓: bottom of this column
+	#expect(e.cursorIndex == 7)
+	view.doCommand(by: #selector(NSResponder.moveToRightEndOfLine(_:))) // ⌘→: the first column
+	#expect(e.cursorIndex == 0)
+	view.doCommand(by: #selector(NSResponder.moveToLeftEndOfLine(_:))) // ⌘←: the last column
+	#expect(e.cursorIndex == 7)
+}
+
+// An unhandled command travels up the responder chain instead of vanishing (here: to a parent view).
+@Test @MainActor func anUnhandledCommandGoesUpTheResponderChain() {
+	final class Catcher: NSView {
+		var received: [Selector] = []
+		override func doCommand(by selector: Selector) { received.append(selector) }
+	}
+	let parent = Catcher(frame: .zero)
+	let view = PorticoTextView(frame: .zero, layoutEngine: engine("abc"))
+	parent.addSubview(view)
+	view.doCommand(by: #selector(NSResponder.insertTab(_:)))
+	#expect(parent.received == [#selector(NSResponder.insertTab(_:))])
+}
+#endif
