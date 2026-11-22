@@ -3,6 +3,8 @@
 Notable changes to Portico. Pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
+
+## [0.7.6] - 2026-11-22
 ### Fixed
 - **The upstream (line-end) caret is re-checked on every relayout** — undo/redo, marked text, attributes, bounds,
   orientation: it survives only while its index still ends a soft-wrapped line (an ink change keeps it; a hard break
