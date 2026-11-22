@@ -533,8 +533,87 @@ public class PorticoTextLayoutEngine {
 	}
 	
 	public func moveCursor(direction: MoveDirection, modifySelection: Bool = false) {
+		moveCursor(toIndex: targetIndex(for: direction), modifySelection: modifySelection)
+	}
+
+	/// A move by a larger unit than one step — the macOS ⌘/⌥/⌃ navigation commands. Logical, not spatial: the view
+	/// maps each key to a unit per orientation (a vertical column's top is its line START).
+	public enum MoveUnit {
+		/// The start / end of the laid-out line the caret is on (a column, in vertical text).
+		case lineStart, lineEnd
+		/// The start / end of the hard paragraph (between line breaks).
+		case paragraphStart, paragraphEnd
+		case documentStart, documentEnd
+		/// The start of the previous word / the end of the next word (system word segmentation).
+		case wordBackward, wordForward
+	}
+
+	/// Move the caret by `unit` (and extend the selection when `modifySelection`).
+	public func moveCursor(to unit: MoveUnit, modifySelection: Bool = false) {
+		moveCursor(toIndex: index(from: cursorIndex, to: unit), modifySelection: modifySelection)
+	}
+
+	/// The string index `unit` reaches from `from`. **Pure**, like `index(from:moving:)`.
+	func index(from: Int, to unit: MoveUnit) -> Int {
+		let ns = attributedString.string as NSString
+		let length = ns.length
+		let from = max(0, min(from, length))
+		switch unit {
+		case .documentStart:
+			return 0
+		case .documentEnd:
+			return length
+		case .paragraphStart:
+			let paragraph = ns.paragraphRange(for: NSRange(location: min(from, max(0, length - 1)), length: 0))
+			return from == length && length > 0 && ns.character(at: length - 1) == 0x0A ? length : paragraph.location
+		case .paragraphEnd:
+			guard from < length else { return length }
+			var end = 0
+			var contentsEnd = 0
+			ns.getParagraphStart(nil, end: &end, contentsEnd: &contentsEnd, for: NSRange(location: from, length: 0))
+			return contentsEnd
+		case .lineStart, .lineEnd:
+			guard let line = lineRange(containing: from) else {
+				return index(from: from, to: unit == .lineStart ? .paragraphStart : .paragraphEnd)
+			}
+			if unit == .lineStart { return line.location }
+			let end = line.location + line.length
+			// A line that ends in a hard break: the end is BEFORE the break, or the caret would land on the next line.
+			return end > line.location && ns.character(at: end - 1) == 0x0A ? end - 1 : end
+		case .wordBackward:
+			var target = 0
+			ns.enumerateSubstrings(in: NSRange(location: 0, length: from), options: [.byWords, .substringNotRequired]) { _, word, _, _ in
+				target = word.location
+			}
+			return target
+		case .wordForward:
+			guard from < length else { return length }
+			var target = length
+			ns.enumerateSubstrings(in: NSRange(location: from, length: length - from),
+								   options: [.byWords, .substringNotRequired]) { _, word, _, stop in
+				target = word.location + word.length
+				stop.pointee = true
+			}
+			return target
+		}
+	}
+
+	/// The string range of the laid-out line (column) holding `index`; nil before the first layout. At a soft-wrap
+	/// boundary the index belongs to the line it STARTS; the end of the text belongs to the last line.
+	private func lineRange(containing index: Int) -> NSRange? {
+		guard let textFrame else { return nil }
+		let lines = CTFrameGetLines(textFrame) as! [CTLine]
+		guard !lines.isEmpty else { return nil }
+		for line in lines {
+			let range = CTLineGetStringRange(line)
+			if index < range.location + range.length { return NSRange(location: range.location, length: range.length) }
+		}
+		let last = CTLineGetStringRange(lines[lines.count - 1])
+		return NSRange(location: last.location, length: last.length)
+	}
+
+	private func moveCursor(toIndex target: Int, modifySelection: Bool) {
 		typingRunOpen = false // moving the caret ends a coalesced typing run
-		let target = targetIndex(for: direction)
 
 		if modifySelection {
 			if selectionRange == nil {

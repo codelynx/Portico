@@ -158,8 +158,50 @@ public class PorticoTextView: NSView, NSMenuItemValidation {
 		} else if selector == #selector(moveDownAndModifySelection(_:)) {
 			layoutEngine.moveCursor(direction: .down, modifySelection: true)
 			setNeedsDisplay(bounds)
+		} else if let (unit, extend) = navigation(for: selector) {
+			layoutEngine.moveCursor(to: unit, modifySelection: extend)
+			setNeedsDisplay(bounds)
 		} else if responds(to: selector) {
 			perform(selector)
+		} else {
+			// ⛔ Unhandled: up the responder chain (and a beep at its end), never silently dropped. Dropping ⌘← left a
+			// selection in place, so the next keystroke replaced it (TestFlight feedback on MangaLoft 1.0.0 (30)).
+			super.doCommand(by: selector)
+		}
+	}
+
+	/// The larger-unit moves (⌘/⌥ arrows, ⌃A/⌃E) per orientation. Spatial for the arrow keys, like the plain arrows:
+	/// in vertical text ↑/↓ run along the column, so ⌘↑/⌘↓ go to the column's top/bottom (line start/end) and ⌘→/⌘←
+	/// to the first/last column (document start/end). The second value is true for the extend-the-selection forms.
+	private func navigation(for selector: Selector) -> (PorticoTextLayoutEngine.MoveUnit, Bool)? {
+		let vertical = layoutEngine.orientation == .vertical
+		switch selector {
+		case #selector(moveToLeftEndOfLine(_:)): return (vertical ? .documentEnd : .lineStart, false)
+		case #selector(moveToLeftEndOfLineAndModifySelection(_:)): return (vertical ? .documentEnd : .lineStart, true)
+		case #selector(moveToRightEndOfLine(_:)): return (vertical ? .documentStart : .lineEnd, false)
+		case #selector(moveToRightEndOfLineAndModifySelection(_:)): return (vertical ? .documentStart : .lineEnd, true)
+		case #selector(moveToBeginningOfDocument(_:)): return (vertical ? .lineStart : .documentStart, false)
+		case #selector(moveToBeginningOfDocumentAndModifySelection(_:)): return (vertical ? .lineStart : .documentStart, true)
+		case #selector(moveToEndOfDocument(_:)): return (vertical ? .lineEnd : .documentEnd, false)
+		case #selector(moveToEndOfDocumentAndModifySelection(_:)): return (vertical ? .lineEnd : .documentEnd, true)
+		case #selector(moveToBeginningOfLine(_:)): return (.lineStart, false)
+		case #selector(moveToBeginningOfLineAndModifySelection(_:)): return (.lineStart, true)
+		case #selector(moveToEndOfLine(_:)): return (.lineEnd, false)
+		case #selector(moveToEndOfLineAndModifySelection(_:)): return (.lineEnd, true)
+		case #selector(moveToBeginningOfParagraph(_:)): return (.paragraphStart, false)
+		case #selector(moveToBeginningOfParagraphAndModifySelection(_:)): return (.paragraphStart, true)
+		case #selector(moveToEndOfParagraph(_:)): return (.paragraphEnd, false)
+		case #selector(moveToEndOfParagraphAndModifySelection(_:)): return (.paragraphEnd, true)
+		case #selector(moveWordBackward(_:)): return (.wordBackward, false)
+		case #selector(moveWordBackwardAndModifySelection(_:)): return (.wordBackward, true)
+		case #selector(moveWordForward(_:)): return (.wordForward, false)
+		case #selector(moveWordForwardAndModifySelection(_:)): return (.wordForward, true)
+		// ⌥←/⌥→ are words along a horizontal line; in vertical text ←/→ cross columns, so they have no word meaning.
+		case #selector(moveWordLeft(_:)): return vertical ? nil : (.wordBackward, false)
+		case #selector(moveWordLeftAndModifySelection(_:)): return vertical ? nil : (.wordBackward, true)
+		case #selector(moveWordRight(_:)): return vertical ? nil : (.wordForward, false)
+		case #selector(moveWordRightAndModifySelection(_:)): return vertical ? nil : (.wordForward, true)
+		default: return nil
 		}
 	}
 
