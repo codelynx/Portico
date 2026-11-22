@@ -4,6 +4,15 @@ Notable changes to Portico. Pre-1.0, minor versions may include breaking changes
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-11-21
+### Fixed
+- **macOS: line, document, paragraph and word moves.** `PorticoTextView` handled only the plain arrows, so ⌘←/⌘→,
+  ⌘↑/⌘↓, ⌥←/⌥→, ⌃A/⌃E and their Shift (extend) forms did nothing — a selection stayed, and the next keystroke
+  replaced it. They now move the caret, spatially per orientation like the plain arrows: in vertical text ⌘↑/⌘↓ go
+  to the top/bottom of the column and ⌘→/⌘← to the first/last column (⌥←/⌥→ have no word meaning there).
+  A line end stops before a hard line break. New engine API: `moveCursor(to: MoveUnit, modifySelection:)`.
+- **macOS: an unhandled command goes up the responder chain** (and beeps at its end) instead of being dropped.
+
 ## [0.7.2] - 2026-10-09
 ### Added
 - **`setDocumentAttributes(_:)` — change the whole document's look while it is being edited.** Font, colour,
